@@ -1,0 +1,68 @@
+# Timesheet OCR Pipeline Configuration
+# ======================================
+
+# Input / Output paths (relative to project root)
+paths:
+  input_dir: "input"
+  output_dir: "output"
+  samples_dir: "samples"
+
+# OCR confidence thresholds
+confidence:
+  accept_threshold: 0.85      # PP-OCRv5 result accepted as-is
+  fallback_threshold: 0.60    # Send to Qwen2.5-VL for re-extraction
+  # Below fallback_threshold → route to review queue
+
+# PP-OCRv5 settings
+ppocr:
+  lang: "en"
+  use_angle_cls: true
+  use_gpu: false
+  det_db_thresh: 0.3
+  rec_batch_num: 6
+
+# Qwen2.5-VL via Ollama
+ollama:
+  host: "http://localhost:11434"
+  model: "qwen2.5vl:7b"
+  timeout_seconds: 60
+  max_retries: 2
+
+# Image preprocessing
+preprocessing:
+  target_dpi: 300
+  denoise: true
+  deskew: true
+  binarize: true
+  # Adaptive threshold block size (must be odd)
+  adaptive_block_size: 11
+  adaptive_c: 2
+
+# Layout zones (pixel coordinates - adjust for your timesheet form)
+# These define rectangular regions: [x_start, y_start, x_end, y_end]
+# as fractions of image dimensions (0.0 to 1.0)
+layout:
+  header_zone: [0.0, 0.0, 1.0, 0.15]       # Top 15% for employee/patient name
+  table_zone: [0.0, 0.15, 1.0, 0.90]        # Middle 75% for data rows
+  footer_zone: [0.0, 0.90, 1.0, 1.0]        # Bottom 10% for signatures/totals
+
+  # Column boundaries as fraction of image width
+  # [date, time_in, time_out, total_hours, notes]
+  columns:
+    date: [0.0, 0.20]
+    time_in: [0.20, 0.40]
+    time_out: [0.40, 0.60]
+    total_hours: [0.60, 0.75]
+    notes: [0.75, 1.0]
+
+# Validation rules
+validation:
+  max_shift_hours: 16          # Flag shifts longer than this
+  hours_mismatch_tolerance: 0.25  # Flag if calculated vs written hours differ by more than this
+  allow_future_dates: false
+  max_days_in_past: 365        # Flag dates older than this
+
+# Export settings
+export:
+  formats: ["xlsx", "csv", "json"]
+  excel_sheet_name: "Timesheet Data"

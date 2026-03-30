@@ -1,0 +1,33 @@
+[project]
+name = "timesheet-ocr"
+version = "0.1.0"
+description = "Local OCR pipeline for extracting structured data from scanned handwritten home-health timesheets"
+readme = "README.md"
+authors = [
+    { name = "mohitagr18", email = "mohit84@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "paddleocr>=2.9.0",
+    "paddlepaddle>=3.0.0",
+    "ollama>=0.4.0",
+    "Pillow>=10.0.0",
+    "opencv-python-headless>=4.8.0",
+    "pydantic>=2.0.0",
+    "openpyxl>=3.1.0",
+    "PyYAML>=6.0",
+    "pdf2image>=1.16.0",
+]
+
+[project.scripts]
+timesheet-ocr = "timesheet_ocr.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.2,<0.10.0"]
+build-backend = "uv_build"

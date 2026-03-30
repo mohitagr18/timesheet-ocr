@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Input data (contains PHI)
+input/
+
+# Output data (contains extracted PHI)
+output/
+
+# Sample data
+samples/
