@@ -1,72 +1,140 @@
-# Timesheet OCR Pipeline Configuration
-# ======================================
-
-# Extraction Mode: "ppocr_grid" (standard forms) or "vlm_full_page" (complex matrix forms)
 extraction_mode: "ppocr_grid"
 
-# Input / Output paths (relative to project root)
+# --- Input / Output ---
 paths:
   input_dir: "input"
   output_dir: "output"
   samples_dir: "samples"
 
-# OCR confidence thresholds
+# --- OCR confidence thresholds ---
 confidence:
-  accept_threshold: 0.85      # PP-OCRv5 result accepted as-is
-  fallback_threshold: 0.60    # Send to Qwen2.5-VL for re-extraction
-  # Below fallback_threshold → route to review queue
+  accept_threshold: 0.90     # Raised to ensure messy fields aren't accepted blindly
+  fallback_threshold: 0.75   # Send anything below 75% to Qwen2.5-VL for a second look
 
-# PP-OCRv5 settings
+# --- PP-OCRv5 settings ---
 ppocr:
   lang: "en"
   use_angle_cls: true
   use_gpu: false
-  det_db_thresh: 0.3
-  rec_batch_num: 6
+  det_db_thresh: 0.45        # Slightly higher to ignore faint background noise
+  rec_batch_num: 4
 
-# Qwen2.5-VL via Ollama
+# --- Qwen2.5-VL via Ollama ---
 ollama:
   host: "http://localhost:11434"
-  model: "qwen2.5vl:7b"
+  model: "qwen2.5-vl:7b"
   timeout_seconds: 60
   max_retries: 2
 
-# Image preprocessing
+# --- Image preprocessing ---
 preprocessing:
-  target_dpi: 300
+  target_dpi: 400            # Higher DPI helps read the small handwriting
   denoise: true
-  deskew: true
-  binarize: true
-  # Adaptive threshold block size (must be odd)
-  adaptive_block_size: 11
-  adaptive_c: 2
+  deskew: false              # Disabled to prevent layout coordinate drift
+  binarize: false            # Let PaddleOCR handle the raw grayscale/color
+  adaptive_block_size: 15
+  adaptive_c: 3
 
-# Layout zones (pixel coordinates - adjust for your timesheet form)
-# These define rectangular regions: [x_start, y_start, x_end, y_end]
-# as fractions of image dimensions (0.0 to 1.0)
+# --- Layout detection rules ---
 layout:
-  transposed: true                         # Set to true if shifts span columns instead of rows
-  header_zone: [0.0, 0.0, 1.0, 0.16]       # Top 16% for employee/patient name (Recipient's Name is at ~0.10)
-  table_zone: [0.0, 0.16, 1.0, 0.94]       # Middle 78% for Date, Time In, Time Out, and Number of Hours (~0.92)
-  footer_zone: [0.0, 0.94, 1.0, 1.0]       # Bottom 6% for RN/LPN signatures
+  transposed: true
+  
+  # Zoned fractions tailored exactly to the C.Ferguson-style timesheet
+  header_zone: [0.0, 0.0, 1.0, 0.14]   # Top block for names
+  table_zone: [0.0, 0.14, 1.0, 0.72]   # The main data section
+  footer_zone: [0.0, 0.92, 1.0, 1.0]   # Signatures at the very bottom
 
-  # Column boundaries (or ROW boundaries if transposed: true)
-  # [date, time_in, time_out, total_hours, notes]
+  # Y-axis bands down the page (for transposed=true)
   columns:
-    date: [0.0, 0.08]          # Top 8% of the table's height
-    time_in: [0.08, 0.16]      # Next 8% of the height
-    time_out: [0.16, 0.24]     # Next 8% of the height
-    total_hours: [0.24, 0.35]  # Next 11% of the height
-    notes: [0.35, 1.0]         # The bottom 65% is massive medical checklists
+    date: [0.17, 0.23]        # Captures the "1/7/26" row
+    time_in: [0.54, 0.59]     # Skips the medical checklist, targets "TIME IN" 
+    time_out: [0.59, 0.64]    # Targets "TIME OUT"
+    total_hours: [0.64, 0.69] # Targets "NUMBER OF HOURS"
+    notes: [0.70, 0.92]       # Captures the large comments block
 
-# Validation rules
+# --- Validation rules ---
 validation:
-  max_shift_hours: 16          # Flag shifts longer than this
-  hours_mismatch_tolerance: 0.25  # Flag if calculated vs written hours differ by more than this
+  max_shift_hours: 16
+  hours_mismatch_tolerance: 0.25
   allow_future_dates: false
-  max_days_in_past: 365        # Flag dates older than this
+  max_days_in_past: 365
 
-# Export settings
+# --- Export settings ---
 export:
-  formats: ["xlsx"] # Only export Excel to a merged file
+  formats: ["xlsx"]
   excel_sheet_name: "Timesheet Data"
+
+
+
+# # Timesheet OCR Pipeline Configuration
+# # ======================================
+
+# # Extraction Mode: "ppocr_grid" (standard forms) or "vlm_full_page" (complex matrix forms)
+# extraction_mode: "ppocr_grid"
+
+# # Input / Output paths (relative to project root)
+# paths:
+#   input_dir: "input"
+#   output_dir: "output"
+#   samples_dir: "samples"
+
+# # OCR confidence thresholds
+# confidence:
+#   accept_threshold: 0.85      # PP-OCRv5 result accepted as-is
+#   fallback_threshold: 0.60    # Send to Qwen2.5-VL for re-extraction
+#   # Below fallback_threshold → route to review queue
+
+# # PP-OCRv5 settings
+# ppocr:
+#   lang: "en"
+#   use_angle_cls: true
+#   use_gpu: false
+#   det_db_thresh: 0.3
+#   rec_batch_num: 6
+
+# # Qwen2.5-VL via Ollama
+# ollama:
+#   host: "http://localhost:11434"
+#   model: "qwen2.5vl:7b"
+#   timeout_seconds: 60
+#   max_retries: 2
+
+# # Image preprocessing
+# preprocessing:
+#   target_dpi: 300
+#   denoise: true
+#   deskew: true
+#   binarize: true
+#   # Adaptive threshold block size (must be odd)
+#   adaptive_block_size: 11
+#   adaptive_c: 2
+
+# # Layout zones (pixel coordinates - adjust for your timesheet form)
+# # These define rectangular regions: [x_start, y_start, x_end, y_end]
+# # as fractions of image dimensions (0.0 to 1.0)
+# layout:
+#   transposed: true                         # Set to true if shifts span columns instead of rows
+#   header_zone: [0.0, 0.0, 1.0, 0.16]       # Top 16% for employee/patient name
+#   table_zone: [0.0, 0.16, 1.0, 0.40]       # Limit the table zone strictly to the top 40% (timestamps only) to ignore checklists
+#   footer_zone: [0.0, 0.94, 1.0, 1.0]       # Bottom 6% for RN/LPN signatures
+
+#   # Column boundaries (or ROW boundaries if transposed: true)
+#   # [date, time_in, time_out, total_hours, notes]
+#   columns:
+#     date: [0.16, 0.22]         # From 16% to 22% down the page
+#     time_in: [0.22, 0.28]      # From 22% to 28% down the page
+#     time_out: [0.28, 0.34]     # From 28% to 34% down the page
+#     total_hours: [0.34, 0.40]  # From 34% to 40% down the page
+#     notes: [0.40, 1.0]         # Medical checklists below are ignored
+
+# # Validation rules
+# validation:
+#   max_shift_hours: 16          # Flag shifts longer than this
+#   hours_mismatch_tolerance: 0.25  # Flag if calculated vs written hours differ by more than this
+#   allow_future_dates: false
+#   max_days_in_past: 365        # Flag dates older than this
+
+# # Export settings
+# export:
+#   formats: ["xlsx"] # Only export Excel to a merged file
+#   excel_sheet_name: "Timesheet Data"

@@ -214,3 +214,5 @@ output/
 
 # Sample data
 samples/
+
+.DS_Store
