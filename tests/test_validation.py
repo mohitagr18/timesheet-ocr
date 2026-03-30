@@ -4,9 +4,9 @@ from datetime import date, time, timedelta
 
 import pytest
 
-from timesheet_ocr.config import load_config
-from timesheet_ocr.models import RowStatus, TimesheetRecord, TimesheetRow
-from timesheet_ocr.validation import validate_record, validate_row
+from config import load_config
+from models import RowStatus, TimesheetRecord, TimesheetRow
+from validation import validate_record, validate_row
 
 
 @pytest.fixture

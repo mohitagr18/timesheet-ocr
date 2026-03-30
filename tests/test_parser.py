@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from timesheet_ocr.parser import clean_name, parse_date, parse_hours, parse_time
+from parser import clean_name, parse_date, parse_hours, parse_time
 
 
 class TestParseDate:

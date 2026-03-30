@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from timesheet_ocr.models import (
+from models import (
     CellResult,
     ExtractionResult,
     OcrSource,

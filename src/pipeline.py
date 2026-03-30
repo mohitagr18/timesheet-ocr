@@ -247,7 +247,7 @@ class Pipeline:
 
             for row_idx, row_zone in enumerate(layout.row_zones):
                 row = self._extract_row(
-                    image=image,
+                    image=preprocessed,
                     preprocessed=preprocessed,
                     all_boxes=ocr_result.boxes,
                     row_zone=row_zone,
