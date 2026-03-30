@@ -41,7 +41,7 @@ def export_results(result: ExtractionResult, config: AppConfig) -> list[Path]:
         created_files.append(json_path)
 
     if "xlsx" in formats:
-        xlsx_path = output_dir / f"{stem}_results.xlsx"
+        xlsx_path = output_dir / "merged_results.xlsx"
         _export_excel(result, xlsx_path, config)
         created_files.append(xlsx_path)
 
@@ -103,14 +103,26 @@ def _export_json(result: ExtractionResult, path: Path) -> None:
 
 
 def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> None:
-    """Export results as formatted Excel workbook."""
-    from openpyxl import Workbook
+    """Export results as formatted Excel workbook. Appends to existing if it exists."""
+    from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = config.export.excel_sheet_name
+    if path.exists():
+        wb = load_workbook(path)
+        if config.export.excel_sheet_name in wb.sheetnames:
+            ws = wb[config.export.excel_sheet_name]
+        else:
+            ws = wb.active
+            ws.title = config.export.excel_sheet_name
+        data_row = ws.max_row + 1
+        headers_needed = False
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = config.export.excel_sheet_name
+        data_row = 2
+        headers_needed = True
 
     # ── Styles ─────────────────────────────────────────────────────
     header_font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
@@ -135,12 +147,13 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
         "Overnight", "Notes", "Confidence", "Status", "Issues",
     ]
 
-    for col_idx, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = thin_border
+    if headers_needed:
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
 
     # ── Data rows ──────────────────────────────────────────────────
     data_row = 2

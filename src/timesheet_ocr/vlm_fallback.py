@@ -116,19 +116,19 @@ class VlmFallback:
             logger.error(f"VLM row extraction failed: {e}")
             return {}
 
-    def extract_full_page(self, image: np.ndarray) -> list[dict[str, str]]:
-        """Extract all shift records from a full page image.
+    def extract_full_page(self, image: np.ndarray) -> dict:
+        """Extract all shift records and header information from a full page image.
         
-        Returns a list of dicts, each mapping field names to extracted values.
+        Returns a dict containing 'shifts' (list of dicts) and header strings.
         """
         if not self._ensure_client():
-            return []
+            return {"shifts": [], "recipient_name": "", "rn_lpn_name": ""}
 
         prompt = self._build_full_page_prompt()
         img_b64 = self._image_to_base64(image)
 
         try:
-            logger.info("Sending full page to VLM. This may take a few seconds...")
+            logger.info("Sending full page to VLM. Processing...")
             response = self._client.chat(
                 model=self.config.ollama.model,
                 messages=[
@@ -146,7 +146,7 @@ class VlmFallback:
 
         except Exception as e:
             logger.error(f"VLM full page extraction failed: {e}")
-            return []
+            return {"shifts": [], "recipient_name": "", "rn_lpn_name": ""}
 
     def _build_cell_prompt(self, field_name: str) -> str:
         """Build a targeted prompt for single-cell extraction."""
@@ -192,59 +192,55 @@ class VlmFallback:
     def _build_full_page_prompt(self) -> str:
         """Build a prompt for full-page matrix extraction."""
         return (
-            "This image is a handwritten timesheet. Please extract the shifts for all the listed days.\n"
-            "Read carefully. Some forms use rows for days, while others use columns for days.\n"
+            "This image is a handwritten timesheet. Please extract the shifts for all the listed days, "
+            "as well as the Recipient's Name and the RN/LPN's Name.\n"
+            "Do NOT extract notes, comments, or other care tasks.\n"
             "For each distinct day/shift that has Time In and Time Out recorded, create an entry.\n\n"
-            "Return ONLY a JSON array of objects `[{}, {}]`.\n"
-            "Each object must have exactly these keys:\n"
-            '"date": "...", '
-            '"time_in": "...", '
-            '"time_out": "...", '
-            '"total_hours": "...", '
-            '"notes": "..."\n\n'
+            "Return ONLY a JSON object with this exact structure:\n"
+            "{\n"
+            '  "recipient_name": "...",\n'
+            '  "rn_lpn_name": "...",\n'
+            '  "shifts": [\n'
+            '    {"date": "...", "time_in": "...", "time_out": "...", "total_hours": "..."}\n'
+            "  ]\n"
+            "}\n\n"
             "If a field is missing or illegible, use an empty string.\n"
-            "For dates, write the day or date found (e.g., 'Wednesday' or 'MM/DD/YYYY').\n"
-            "Format times as HH:MM."
+            "CRITICAL: For dates, prioritize extracting the numerical Date (Month/Day/Year) over the Day of the week. "
+            "If both exist, extract the numerical date (e.g. '01/07/2026').\n"
+            "Format times as HH:MM.\n"
+            "If a page purely contains signatures or no recorded shift times, do NOT hallucinate shifts. Return an empty array for shifts: `[]`."
         )
 
-    def _parse_full_page_response(self, reply: str) -> list[dict[str, str]]:
+    def _parse_full_page_response(self, reply: str) -> dict:
         """Parse VLM response for a full page extraction."""
         try:
             data = self._extract_json(reply)
+            result = {
+                "recipient_name": str(data.get("recipient_name", "")).strip(),
+                "rn_lpn_name": str(data.get("rn_lpn_name", "")).strip(),
+                "shifts": []
+            }
             
-            # If the model wrapped it in an object like {"shifts": [...]}, unwrap it
-            if isinstance(data, dict):
-                # Look for a list value
-                for val in data.values():
-                    if isinstance(val, list):
-                        data = val
-                        break
-                else: 
-                     # if it returned a single dict that looks like a row
-                    if "time_in" in data and "time_out" in data:
-                        data = [data]
-                    else:
-                        data = []
-
-            if not isinstance(data, list):
-                logger.warning("VLM full page response not a JSON array")
-                return []
+            shifts_data = data.get("shifts", [])
+            
+            if not isinstance(shifts_data, list):
+                logger.warning("VLM full page shifts is not a JSON array")
+                return result
                 
-            results = []
-            for item in data:
+            for item in shifts_data:
                 if isinstance(item, dict):
                     row = {}
-                    for key in ["date", "time_in", "time_out", "total_hours", "notes"]:
+                    for key in ["date", "time_in", "time_out", "total_hours"]:
                         row[key] = str(item.get(key, "")).strip()
+                    row["notes"] = "" # Omit notes
                     
-                    # only append if they at least have some data
                     if any(row.values()):
-                        results.append(row)
+                        result["shifts"].append(row)
                         
-            return results
-        except (json.JSONDecodeError, ValueError) as e:
+            return result
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
             logger.warning(f"VLM full page response not valid JSON: {e}")
-            return []
+            return {"shifts": [], "recipient_name": "", "rn_lpn_name": ""}
 
     def _parse_cell_response(self, reply: str, field_name: str) -> tuple[str, float]:
         """Parse VLM response for a single cell extraction."""
@@ -292,13 +288,19 @@ class VlmFallback:
         return json.loads(text)
 
     @staticmethod
-    def _image_to_base64(image: np.ndarray) -> str:
+    def _image_to_base64(image: np.ndarray, max_dim: int = 1280) -> str:
         """Convert a numpy image to base64 string for Ollama API."""
         if len(image.shape) == 2:
             # Grayscale -> convert to BGR for PIL
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
+        h, w = image.shape[:2]
+        if max(h, w) > max_dim:
+            scale = max_dim / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
         pil_img = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         buffer = io.BytesIO()
-        pil_img.save(buffer, format="PNG")
+        pil_img.save(buffer, format="JPEG", quality=85)
         return base64.b64encode(buffer.getvalue()).decode("utf-8")

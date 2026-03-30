@@ -62,6 +62,19 @@ class Pipeline:
             record = self._process_page(image, file_path.name, page_idx + 1)
             records.append(record)
 
+        # 2.5 Aggregate Document-Level Metadata
+        # (E.g. Page 1 has shifts/patient name, Page 2 has the employee signature)
+        best_emp = max(records, key=lambda r: (r.employee_name_confidence, len(r.employee_name))) if records else None
+        best_pat = max(records, key=lambda r: (r.patient_name_confidence, len(r.patient_name))) if records else None
+        
+        for r in records:
+            if not r.employee_name and best_emp and best_emp.employee_name:
+                r.employee_name = best_emp.employee_name
+                r.employee_name_confidence = best_emp.employee_name_confidence
+            if not r.patient_name and best_pat and best_pat.patient_name:
+                r.patient_name = best_pat.patient_name
+                r.patient_name_confidence = best_pat.patient_name_confidence
+
         # 3. Build result
         elapsed = time_module.time() - start_time
         result = ExtractionResult(
@@ -131,48 +144,29 @@ class Pipeline:
 
     def _process_page(self, image: np.ndarray, source_file: str, page_number: int) -> TimesheetRecord:
         """Process a single page image through OCR + validation."""
-        # 1. Preprocess
         preprocessed = preprocess_image(image, self.config)
 
-        # 2. Detect layout
-        layout = detect_layout(image, self.config)
-
-        # 3. Run OCR on full image (more efficient than per-cell)
-        ocr_result = self.ocr_engine.run(preprocessed)
-
-        # 4. Extract header info (employee name, patient name)
-        header_boxes = boxes_in_zone(
-            ocr_result.boxes,
-            layout.header_zone.x_start,
-            layout.header_zone.y_start,
-            layout.header_zone.x_end,
-            layout.header_zone.y_end,
-        )
         employee_name = ""
         employee_conf = 0.0
         patient_name = ""
         patient_conf = 0.0
-
-        if header_boxes:
-            # Take the first text box as employee name (heuristic)
-            sorted_header = sorted(header_boxes, key=lambda b: (b.y_center, b.x_center))
-            if sorted_header:
-                employee_name = clean_name(sorted_header[0].text)
-                employee_conf = sorted_header[0].confidence
-            if len(sorted_header) > 1:
-                patient_name = clean_name(sorted_header[1].text)
-                patient_conf = sorted_header[1].confidence
-
-        # 5. Extract table rows
         rows = []
+
         if getattr(self.config, "extraction_mode", "ppocr_grid") == "vlm_full_page":
             vlm_results = self.vlm.extract_full_page(image)
-            for row_idx, row_data in enumerate(vlm_results):
-                date_text = row_data["date"]
-                time_in_text = row_data["time_in"]
-                time_out_text = row_data["time_out"]
-                hours_text = row_data["total_hours"]
-                notes_text = row_data["notes"]
+            
+            patient_name = vlm_results.get("recipient_name", "")
+            patient_conf = 0.9 if patient_name else 0.0
+            
+            employee_name = vlm_results.get("rn_lpn_name", "") # RN/LPN mapped to employee
+            employee_conf = 0.9 if employee_name else 0.0
+            
+            for row_idx, row_data in enumerate(vlm_results.get("shifts", [])):
+                date_text = row_data.get("date", "")
+                time_in_text = row_data.get("time_in", "")
+                time_out_text = row_data.get("time_out", "")
+                hours_text = row_data.get("total_hours", "")
+                notes_text = row_data.get("notes", "")
                 
                 rows.append(TimesheetRow(
                     row_index=row_idx,
@@ -185,7 +179,7 @@ class Pipeline:
                     total_hours_text=hours_text,
                     total_hours_parsed=parse_hours(hours_text),
                     notes=notes_text.strip(),
-                    date_confidence=0.9, # High baseline for successful VLM output
+                    date_confidence=0.9, 
                     time_in_confidence=0.9,
                     time_out_confidence=0.9,
                     hours_confidence=0.9,
@@ -195,6 +189,26 @@ class Pipeline:
                     hours_source=OcrSource.VLM,
                 ))
         else:
+            layout = detect_layout(image, self.config)
+            ocr_result = self.ocr_engine.run(preprocessed)
+
+            header_boxes = boxes_in_zone(
+                ocr_result.boxes,
+                layout.header_zone.x_start,
+                layout.header_zone.y_start,
+                layout.header_zone.x_end,
+                layout.header_zone.y_end,
+            )
+
+            if header_boxes:
+                sorted_header = sorted(header_boxes, key=lambda b: (b.y_center, b.x_center))
+                if sorted_header:
+                    employee_name = clean_name(sorted_header[0].text)
+                    employee_conf = sorted_header[0].confidence
+                if len(sorted_header) > 1:
+                    patient_name = clean_name(sorted_header[1].text)
+                    patient_conf = sorted_header[1].confidence
+
             for row_idx, row_zone in enumerate(layout.row_zones):
                 row = self._extract_row(
                     image=image,
