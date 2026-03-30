@@ -59,7 +59,12 @@ class Pipeline:
         records: list[TimesheetRecord] = []
         for page_idx, image in enumerate(images):
             logger.info(f"\n--- Page {page_idx + 1}/{len(images)} ---")
+            
+            page_start_time = time_module.time()
             record = self._process_page(image, file_path.name, page_idx + 1)
+            page_elapsed = time_module.time() - page_start_time
+            
+            logger.info(f"Page {page_idx + 1} processing complete in {page_elapsed:.1f}s")
             records.append(record)
 
         # 2.5 Aggregate Document-Level Metadata
@@ -123,10 +128,35 @@ class Pipeline:
             logger.warning(f"No supported files found in {input_dir}")
             return []
 
-        logger.info(f"Found {len(files)} file(s) to process")
+        # Find already processed files in the merged Excel sheet to skip them
+        processed_files = set()
+        xlsx_path = self.config.output_path / "merged_results.xlsx"
+        if xlsx_path.exists():
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(xlsx_path, read_only=True)
+                if self.config.export.excel_sheet_name in wb.sheetnames:
+                    ws = wb[self.config.export.excel_sheet_name]
+                else:
+                    ws = wb.active
+                
+                # Source File is column A (1-indexed)
+                for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
+                    if row[0]:
+                        processed_files.add(str(row[0]))
+                if processed_files:
+                    logger.info(f"Found {len(processed_files)} previously processed file(s) in Excel.")
+            except Exception as e:
+                logger.warning(f"Could not read existing Excel to find processed files: {e}")
+
+        logger.info(f"Found {len(files)} file(s) in input directory")
 
         results = []
         for file_path in files:
+            if file_path.name in processed_files:
+                logger.info(f"Skipping {file_path.name}: already processed and in Excel.")
+                continue
+                
             try:
                 result = self.process_file(file_path)
                 results.append(result)
@@ -161,15 +191,20 @@ class Pipeline:
             employee_name = vlm_results.get("rn_lpn_name", "") # RN/LPN mapped to employee
             employee_conf = 0.9 if employee_name else 0.0
             
-            for row_idx, row_data in enumerate(vlm_results.get("shifts", [])):
-                date_text = row_data.get("date", "")
-                time_in_text = row_data.get("time_in", "")
-                time_out_text = row_data.get("time_out", "")
-                hours_text = row_data.get("total_hours", "")
-                notes_text = row_data.get("notes", "")
+            valid_row_idx = 0
+            for row_data in vlm_results.get("shifts", []):
+                date_text = row_data.get("date", "").strip()
+                time_in_text = row_data.get("time_in", "").strip()
+                time_out_text = row_data.get("time_out", "").strip()
+                hours_text = row_data.get("total_hours", "").strip()
+                notes_text = row_data.get("notes", "").strip()
+                
+                # Robust Post-Processing: Drop hallucinated empty shifts
+                if not time_in_text and not time_out_text and not hours_text:
+                    continue
                 
                 rows.append(TimesheetRow(
-                    row_index=row_idx,
+                    row_index=valid_row_idx,
                     date_text=date_text,
                     date_parsed=parse_date(date_text),
                     time_in_text=time_in_text,
@@ -188,6 +223,7 @@ class Pipeline:
                     time_out_source=OcrSource.VLM,
                     hours_source=OcrSource.VLM,
                 ))
+                valid_row_idx += 1
         else:
             layout = detect_layout(image, self.config)
             ocr_result = self.ocr_engine.run(preprocessed)
@@ -243,26 +279,45 @@ class Pipeline:
         """Extract data from a single table row using OCR boxes + fallback."""
         columns = self.config.layout.columns
         w = layout.image_width
+        h = layout.image_height
 
         # Map column names to pixel boundaries
-        col_bounds = {
-            "date": (int(w * columns.date[0]), int(w * columns.date[1])),
-            "time_in": (int(w * columns.time_in[0]), int(w * columns.time_in[1])),
-            "time_out": (int(w * columns.time_out[0]), int(w * columns.time_out[1])),
-            "total_hours": (int(w * columns.total_hours[0]), int(w * columns.total_hours[1])),
-            "notes": (int(w * columns.notes[0]), int(w * columns.notes[1])),
-        }
+        if self.config.layout.transposed:
+            field_bounds = {
+                "date": (int(h * columns.date[0]), int(h * columns.date[1])),
+                "time_in": (int(h * columns.time_in[0]), int(h * columns.time_in[1])),
+                "time_out": (int(h * columns.time_out[0]), int(h * columns.time_out[1])),
+                "total_hours": (int(h * columns.total_hours[0]), int(h * columns.total_hours[1])),
+                "notes": (int(h * columns.notes[0]), int(h * columns.notes[1])),
+            }
+        else:
+            field_bounds = {
+                "date": (int(w * columns.date[0]), int(w * columns.date[1])),
+                "time_in": (int(w * columns.time_in[0]), int(w * columns.time_in[1])),
+                "time_out": (int(w * columns.time_out[0]), int(w * columns.time_out[1])),
+                "total_hours": (int(w * columns.total_hours[0]), int(w * columns.total_hours[1])),
+                "notes": (int(w * columns.notes[0]), int(w * columns.notes[1])),
+            }
 
         # Find OCR boxes in each column of this row
         cell_data: dict[str, tuple[str, float]] = {}
         cell_confidences: dict[str, float] = {}
 
-        for col_name, (x_start, x_end) in col_bounds.items():
-            col_boxes = boxes_in_zone(
-                all_boxes, x_start, row_zone.y_start, x_end, row_zone.y_end
-            )
+        for col_name, (start_pix, end_pix) in field_bounds.items():
+            if self.config.layout.transposed:
+                col_boxes = boxes_in_zone(
+                    all_boxes, row_zone.x_start, start_pix, row_zone.x_end, end_pix
+                )
+            else:
+                col_boxes = boxes_in_zone(
+                    all_boxes, start_pix, row_zone.y_start, end_pix, row_zone.y_end
+                )
+
             if col_boxes:
-                text = " ".join(b.text for b in sorted(col_boxes, key=lambda b: b.x_center))
+                if self.config.layout.transposed:
+                    text = " ".join(b.text for b in sorted(col_boxes, key=lambda b: b.y_center))
+                else:
+                    text = " ".join(b.text for b in sorted(col_boxes, key=lambda b: b.x_center))
                 conf = min(b.confidence for b in col_boxes)
             else:
                 text = ""
@@ -276,12 +331,16 @@ class Pipeline:
 
         # Route through confidence check
         row_data = dict(cell_data)  # Copy for potential VLM updates
-        sources: dict[str, OcrSource] = {k: OcrSource.PPOCR for k in col_bounds}
+        sources: dict[str, OcrSource] = {k: OcrSource.PPOCR for k in field_bounds}
 
         # Check if entire row needs VLM fallback
         if should_fallback_entire_row(cell_confidences, self.config):
             logger.info(f"Row {row_idx}: sending entire row to VLM fallback")
-            row_crop = image[row_zone.y_start:row_zone.y_end, :]
+            if self.config.layout.transposed:
+                row_crop = image[row_zone.y_start:row_zone.y_end, row_zone.x_start:row_zone.x_end]
+            else:
+                row_crop = image[row_zone.y_start:row_zone.y_end, :]
+                
             vlm_result = self.vlm.extract_row(row_crop)
             if vlm_result:
                 for field, value in vlm_result.items():
@@ -293,8 +352,12 @@ class Pipeline:
             for col_name, conf in cell_confidences.items():
                 route = route_by_confidence(conf, self.config)
                 if route == Route.FALLBACK:
-                    x_start, x_end = col_bounds[col_name]
-                    cell_crop = image[row_zone.y_start:row_zone.y_end, x_start:x_end]
+                    start_pix, end_pix = field_bounds[col_name]
+                    if self.config.layout.transposed:
+                        cell_crop = image[start_pix:end_pix, row_zone.x_start:row_zone.x_end]
+                    else:
+                        cell_crop = image[row_zone.y_start:row_zone.y_end, start_pix:end_pix]
+                        
                     vlm_value, vlm_conf = self.vlm.extract_cell_value(cell_crop, col_name)
                     if vlm_value:
                         row_data[col_name] = (vlm_value, vlm_conf)

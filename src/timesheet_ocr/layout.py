@@ -77,23 +77,34 @@ def detect_layout(image: np.ndarray, config: AppConfig) -> LayoutResult:
 
     logger.info(f"Layout zones — header: {header_zone.height}px, table: {table_zone.height}px, footer: {footer_zone.height}px")
 
-    # Detect rows within the table zone
+    # Detect rows or columns within the table zone
     table_crop = table_zone.crop(image)
-    row_boundaries = _detect_row_boundaries(table_crop)
-
-    # Build row zones (absolute coordinates)
     row_zones = []
-    for i, (y_top, y_bottom) in enumerate(row_boundaries):
-        row_zone = Zone(
-            x_start=table_zone.x_start,
-            y_start=table_zone.y_start + y_top,
-            x_end=table_zone.x_end,
-            y_end=table_zone.y_start + y_bottom,
-            label=f"row_{i}",
-        )
-        row_zones.append(row_zone)
-
-    logger.info(f"Detected {len(row_zones)} table rows")
+    
+    if layout_cfg.transposed:
+        col_boundaries = _detect_col_boundaries(table_crop)
+        for i, (x_left, x_right) in enumerate(col_boundaries):
+            row_zone = Zone(
+                x_start=table_zone.x_start + x_left,
+                y_start=table_zone.y_start,
+                x_end=table_zone.x_start + x_right,
+                y_end=table_zone.y_end,
+                label=f"shift_col_{i}"
+            )
+            row_zones.append(row_zone)
+        logger.info(f"Detected {len(row_zones)} transposed table shifts (columns)")
+    else:
+        row_boundaries = _detect_row_boundaries(table_crop)
+        for i, (y_top, y_bottom) in enumerate(row_boundaries):
+            row_zone = Zone(
+                x_start=table_zone.x_start,
+                y_start=table_zone.y_start + y_top,
+                x_end=table_zone.x_end,
+                y_end=table_zone.y_start + y_bottom,
+                label=f"row_{i}",
+            )
+            row_zones.append(row_zone)
+        logger.info(f"Detected {len(row_zones)} table rows")
 
     # Build grid cells (row × column)
     columns = layout_cfg.columns
@@ -107,18 +118,31 @@ def detect_layout(image: np.ndarray, config: AppConfig) -> LayoutResult:
 
     grid_cells = []
     for row_idx, row_zone in enumerate(row_zones):
-        for col_name, (x_frac_start, x_frac_end) in col_map.items():
-            cell = GridCell(
-                row_idx=row_idx,
-                col_name=col_name,
-                zone=Zone(
-                    x_start=int(w * x_frac_start),
-                    y_start=row_zone.y_start,
-                    x_end=int(w * x_frac_end),
-                    y_end=row_zone.y_end,
-                    label=f"row_{row_idx}_{col_name}",
-                ),
-            )
+        for col_name, (frac_start, frac_end) in col_map.items():
+            if layout_cfg.transposed:
+                cell = GridCell(
+                    row_idx=row_idx,
+                    col_name=col_name,
+                    zone=Zone(
+                        x_start=row_zone.x_start,
+                        y_start=int(h * frac_start),
+                        x_end=row_zone.x_end,
+                        y_end=int(h * frac_end),
+                        label=f"shift_{row_idx}_{col_name}",
+                    ),
+                )
+            else:
+                cell = GridCell(
+                    row_idx=row_idx,
+                    col_name=col_name,
+                    zone=Zone(
+                        x_start=int(w * frac_start),
+                        y_start=row_zone.y_start,
+                        x_end=int(w * frac_end),
+                        y_end=row_zone.y_end,
+                        label=f"row_{row_idx}_{col_name}",
+                    ),
+                )
             grid_cells.append(cell)
 
     return LayoutResult(
@@ -205,3 +229,62 @@ def _detect_row_boundaries(table_image: np.ndarray) -> list[tuple[int, int]]:
 
     logger.info(f"Fallback: using {n_rows} evenly-spaced rows")
     return rows
+
+
+def _detect_col_boundaries(table_image: np.ndarray) -> list[tuple[int, int]]:
+    """Detect vertical column boundaries in the table zone."""
+    h, w = table_image.shape[:2]
+
+    # Ensure grayscale
+    if len(table_image.shape) == 3:
+        gray = cv2.cvtColor(table_image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = table_image.copy()
+
+    # Binarize
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Detect vertical lines using morphological operations
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, h // 3))
+    vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+
+    # Find the x-coordinates of vertical lines
+    line_x_positions = []
+    col_sums = np.sum(vertical_lines, axis=0) # sum over Y
+    threshold = h * 128  # At least half the height should be filled
+
+    in_line = False
+    line_start = 0
+    for x in range(w):
+        if col_sums[x] > threshold:
+            if not in_line:
+                line_start = x
+                in_line = True
+        else:
+            if in_line:
+                line_x_positions.append((line_start + x) // 2)
+                in_line = False
+
+    # Build cols from line boundaries
+    if len(line_x_positions) >= 2:
+        cols = []
+        for i in range(len(line_x_positions) - 1):
+            x_left = line_x_positions[i]
+            x_right = line_x_positions[i + 1]
+            if x_right - x_left > 10:  # Skip tiny cols
+                cols.append((x_left, x_right))
+        if cols:
+            logger.info(f"Detected {len(cols)} columns from vertical lines")
+            return cols
+
+    # Fallback: evenly-spaced columns
+    n_cols = 7 # 7 days a week
+    col_width = w // n_cols
+    cols = []
+    for i in range(n_cols):
+        x_left = i * col_width
+        x_right = min((i + 1) * col_width, w)
+        cols.append((x_left, x_right))
+
+    logger.info(f"Fallback: using {n_cols} evenly-spaced columns")
+    return cols

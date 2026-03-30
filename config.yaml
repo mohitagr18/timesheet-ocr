@@ -1,8 +1,8 @@
 # Timesheet OCR Pipeline Configuration
 # ======================================
 
-# Extraction Mode: "ppocr_grid" (standard forms) or "vlm_full_page" (complex matrix forms like Ferguson)
-extraction_mode: "vlm_full_page"
+# Extraction Mode: "ppocr_grid" (standard forms) or "vlm_full_page" (complex matrix forms)
+extraction_mode: "ppocr_grid"
 
 # Input / Output paths (relative to project root)
 paths:
@@ -45,18 +45,19 @@ preprocessing:
 # These define rectangular regions: [x_start, y_start, x_end, y_end]
 # as fractions of image dimensions (0.0 to 1.0)
 layout:
+  transposed: true                         # Set to true if shifts span columns instead of rows
   header_zone: [0.0, 0.0, 1.0, 0.16]       # Top 16% for employee/patient name (Recipient's Name is at ~0.10)
   table_zone: [0.0, 0.16, 1.0, 0.94]       # Middle 78% for Date, Time In, Time Out, and Number of Hours (~0.92)
   footer_zone: [0.0, 0.94, 1.0, 1.0]       # Bottom 6% for RN/LPN signatures
 
-  # Column boundaries as fraction of image width
+  # Column boundaries (or ROW boundaries if transposed: true)
   # [date, time_in, time_out, total_hours, notes]
   columns:
-    date: [0.0, 0.20]
-    time_in: [0.20, 0.40]
-    time_out: [0.40, 0.60]
-    total_hours: [0.60, 0.75]
-    notes: [0.75, 1.0]
+    date: [0.0, 0.08]          # Top 8% of the table's height
+    time_in: [0.08, 0.16]      # Next 8% of the height
+    time_out: [0.16, 0.24]     # Next 8% of the height
+    total_hours: [0.24, 0.35]  # Next 11% of the height
+    notes: [0.35, 1.0]         # The bottom 65% is massive medical checklists
 
 # Validation rules
 validation:

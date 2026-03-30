@@ -193,7 +193,8 @@ class VlmFallback:
         """Build a prompt for full-page matrix extraction."""
         return (
             "This image is a handwritten timesheet. Please extract the shifts for all the listed days, "
-            "as well as the Recipient's Name and the RN/LPN's Name.\n"
+            "as well as the Recipient's Name (Patient) and the Print RN/LPN Name (Employee).\n"
+            "CRITICAL: Do NOT extract the Agency or Provider Name (e.g., do not extract 'Yours Truly, Inc' as the RN/LPN Name).\n"
             "Do NOT extract notes, comments, or other care tasks.\n"
             "For each distinct day/shift that has Time In and Time Out recorded, create an entry.\n\n"
             "Return ONLY a JSON object with this exact structure:\n"
@@ -208,7 +209,8 @@ class VlmFallback:
             "CRITICAL: For dates, prioritize extracting the numerical Date (Month/Day/Year) over the Day of the week. "
             "If both exist, extract the numerical date (e.g. '01/07/2026').\n"
             "Format times as HH:MM.\n"
-            "If a page purely contains signatures or no recorded shift times, do NOT hallucinate shifts. Return an empty array for shifts: `[]`."
+            "CRITICAL: Do NOT extract a shift if the Time In and Time Out fields are entirely blank. "
+            "If a page purely contains signatures, text, or no recorded shift times, do NOT hallucinate shifts. Return an empty array for shifts: `[]`."
         )
 
     def _parse_full_page_response(self, reply: str) -> dict:
