@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "paddleocr>=2.9.0",
+    "paddleocr>=2.9.0,<3.0.0",
     "paddlepaddle>=3.0.0",
     "ollama>=0.4.0",
     "Pillow>=10.0.0",

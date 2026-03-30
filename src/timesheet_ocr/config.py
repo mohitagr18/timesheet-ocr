@@ -56,9 +56,9 @@ class ColumnBounds(BaseModel):
 
 
 class LayoutConfig(BaseModel):
-    header_zone: list[float] = [0.0, 0.0, 1.0, 0.15]
-    table_zone: list[float] = [0.0, 0.15, 1.0, 0.90]
-    footer_zone: list[float] = [0.0, 0.90, 1.0, 1.0]
+    header_zone: list[float] = [0.0, 0.0, 1.0, 0.16]
+    table_zone: list[float] = [0.0, 0.16, 1.0, 0.94]
+    footer_zone: list[float] = [0.0, 0.94, 1.0, 1.0]
     columns: ColumnBounds = Field(default_factory=ColumnBounds)
 
 
