@@ -165,17 +165,47 @@ class Pipeline:
 
         # 5. Extract table rows
         rows = []
-        for row_idx, row_zone in enumerate(layout.row_zones):
-            row = self._extract_row(
-                image=image,
-                preprocessed=preprocessed,
-                all_boxes=ocr_result.boxes,
-                row_zone=row_zone,
-                row_idx=row_idx,
-                layout=layout,
-            )
-            if row is not None:
-                rows.append(row)
+        if getattr(self.config, "extraction_mode", "ppocr_grid") == "vlm_full_page":
+            vlm_results = self.vlm.extract_full_page(image)
+            for row_idx, row_data in enumerate(vlm_results):
+                date_text = row_data["date"]
+                time_in_text = row_data["time_in"]
+                time_out_text = row_data["time_out"]
+                hours_text = row_data["total_hours"]
+                notes_text = row_data["notes"]
+                
+                rows.append(TimesheetRow(
+                    row_index=row_idx,
+                    date_text=date_text,
+                    date_parsed=parse_date(date_text),
+                    time_in_text=time_in_text,
+                    time_in_parsed=parse_time(time_in_text),
+                    time_out_text=time_out_text,
+                    time_out_parsed=parse_time(time_out_text),
+                    total_hours_text=hours_text,
+                    total_hours_parsed=parse_hours(hours_text),
+                    notes=notes_text.strip(),
+                    date_confidence=0.9, # High baseline for successful VLM output
+                    time_in_confidence=0.9,
+                    time_out_confidence=0.9,
+                    hours_confidence=0.9,
+                    date_source=OcrSource.VLM,
+                    time_in_source=OcrSource.VLM,
+                    time_out_source=OcrSource.VLM,
+                    hours_source=OcrSource.VLM,
+                ))
+        else:
+            for row_idx, row_zone in enumerate(layout.row_zones):
+                row = self._extract_row(
+                    image=image,
+                    preprocessed=preprocessed,
+                    all_boxes=ocr_result.boxes,
+                    row_zone=row_zone,
+                    row_idx=row_idx,
+                    layout=layout,
+                )
+                if row is not None:
+                    rows.append(row)
 
         # 6. Build record
         record = TimesheetRecord(

@@ -77,6 +77,7 @@ class ExportConfig(BaseModel):
 # ── Top-level config ────────────────────────────────────────────────
 
 class AppConfig(BaseModel):
+    extraction_mode: str = "vlm_full_page"  # "ppocr_grid" or "vlm_full_page"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
     ppocr: PpocrConfig = Field(default_factory=PpocrConfig)

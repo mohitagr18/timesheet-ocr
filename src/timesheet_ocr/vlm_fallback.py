@@ -116,6 +116,38 @@ class VlmFallback:
             logger.error(f"VLM row extraction failed: {e}")
             return {}
 
+    def extract_full_page(self, image: np.ndarray) -> list[dict[str, str]]:
+        """Extract all shift records from a full page image.
+        
+        Returns a list of dicts, each mapping field names to extracted values.
+        """
+        if not self._ensure_client():
+            return []
+
+        prompt = self._build_full_page_prompt()
+        img_b64 = self._image_to_base64(image)
+
+        try:
+            logger.info("Sending full page to VLM. This may take a few seconds...")
+            response = self._client.chat(
+                model=self.config.ollama.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [img_b64],
+                    }
+                ],
+                options={"temperature": 0.1},
+            )
+
+            reply = response["message"]["content"].strip()
+            return self._parse_full_page_response(reply)
+
+        except Exception as e:
+            logger.error(f"VLM full page extraction failed: {e}")
+            return []
+
     def _build_cell_prompt(self, field_name: str) -> str:
         """Build a targeted prompt for single-cell extraction."""
         field_hints = {
@@ -156,6 +188,63 @@ class VlmFallback:
             "}\n\n"
             "Use empty string for any field you cannot read."
         )
+
+    def _build_full_page_prompt(self) -> str:
+        """Build a prompt for full-page matrix extraction."""
+        return (
+            "This image is a handwritten timesheet. Please extract the shifts for all the listed days.\n"
+            "Read carefully. Some forms use rows for days, while others use columns for days.\n"
+            "For each distinct day/shift that has Time In and Time Out recorded, create an entry.\n\n"
+            "Return ONLY a JSON array of objects `[{}, {}]`.\n"
+            "Each object must have exactly these keys:\n"
+            '"date": "...", '
+            '"time_in": "...", '
+            '"time_out": "...", '
+            '"total_hours": "...", '
+            '"notes": "..."\n\n'
+            "If a field is missing or illegible, use an empty string.\n"
+            "For dates, write the day or date found (e.g., 'Wednesday' or 'MM/DD/YYYY').\n"
+            "Format times as HH:MM."
+        )
+
+    def _parse_full_page_response(self, reply: str) -> list[dict[str, str]]:
+        """Parse VLM response for a full page extraction."""
+        try:
+            data = self._extract_json(reply)
+            
+            # If the model wrapped it in an object like {"shifts": [...]}, unwrap it
+            if isinstance(data, dict):
+                # Look for a list value
+                for val in data.values():
+                    if isinstance(val, list):
+                        data = val
+                        break
+                else: 
+                     # if it returned a single dict that looks like a row
+                    if "time_in" in data and "time_out" in data:
+                        data = [data]
+                    else:
+                        data = []
+
+            if not isinstance(data, list):
+                logger.warning("VLM full page response not a JSON array")
+                return []
+                
+            results = []
+            for item in data:
+                if isinstance(item, dict):
+                    row = {}
+                    for key in ["date", "time_in", "time_out", "total_hours", "notes"]:
+                        row[key] = str(item.get(key, "")).strip()
+                    
+                    # only append if they at least have some data
+                    if any(row.values()):
+                        results.append(row)
+                        
+            return results
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"VLM full page response not valid JSON: {e}")
+            return []
 
     def _parse_cell_response(self, reply: str, field_name: str) -> tuple[str, float]:
         """Parse VLM response for a single cell extraction."""

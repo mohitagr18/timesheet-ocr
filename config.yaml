@@ -1,6 +1,9 @@
 # Timesheet OCR Pipeline Configuration
 # ======================================
 
+# Extraction Mode: "ppocr_grid" (standard forms) or "vlm_full_page" (complex matrix forms like Ferguson)
+extraction_mode: "vlm_full_page"
+
 # Input / Output paths (relative to project root)
 paths:
   input_dir: "input"
