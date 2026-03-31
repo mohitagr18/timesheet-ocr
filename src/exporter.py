@@ -156,7 +156,6 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
             cell.border = thin_border
 
     # ── Data rows ──────────────────────────────────────────────────
-    data_row = 2
     for record in result.records:
         for row in record.rows:
             values = [
