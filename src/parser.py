@@ -50,7 +50,7 @@ def parse_time(text: str) -> Optional[time]:
     - HH:MM, H:MM
     - HH:MM AM/PM, H:MM AM/PM
     - HHMM (no separator)
-    - Various OCR artifacts (e.g., "9:OO" → "9:00")
+    - Various OCR artifacts (e.g., "9:OO" → "9:00", "Q:00" → "2:00")
     """
     text = text.strip().upper()
 
@@ -59,29 +59,38 @@ def parse_time(text: str) -> Optional[time]:
     text = text.replace("I", "1").replace("l", "1")
     text = text.replace("S", "5").replace("s", "5")
     text = text.replace("B", "8")
+    text = text.replace("Q", "2")
+    text = text.replace("Z", "2")
+    text = text.replace("?", "2")
+
+    # Fix dots between digits (e.g., 5.30 -> 5:30)
+    text = re.sub(r"(\d)\.(\d)", r"\1:\2", text)
 
     # Remove spaces around the colon
     text = re.sub(r"\s*:\s*", ":", text)
+    
+    # Often OCR reads "AM" or "PM" as "0M", ".0M", "CM"
+    text = re.sub(r"[0\.C]M\b", "PM", text)  # best guess fallback
 
-    # Try 12-hour format with AM/PM
-    match = re.match(r"(\d{1,2}):?(\d{2})\s*(AM|PM)", text)
+    # 1. Try 12-hour format with AM/PM (or A/P)
+    match = re.search(r"(\d{1,2}):?(\d{2})\s*([AP]\.?M?\.?)", text)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2))
-        period = match.group(3)
-
-        if period == "PM" and hour != 12:
+        period = match.group(3).replace(".", "")
+        
+        if period.startswith("P") and hour != 12:
             hour += 12
-        elif period == "AM" and hour == 12:
+        elif period.startswith("A") and hour == 12:
             hour = 0
-
+            
         try:
             return time(hour, minute)
         except ValueError:
             pass
 
-    # Try 24-hour format HH:MM
-    match = re.match(r"(\d{1,2}):(\d{2})$", text)
+    # 2. Try 24-hour format HH:MM or H:MM anywhere in the string
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2))
@@ -90,11 +99,17 @@ def parse_time(text: str) -> Optional[time]:
         except ValueError:
             pass
 
-    # Try HHMM (no separator)
-    match = re.match(r"(\d{2})(\d{2})$", text)
+    # 3. Try HHMM or HMM (3 or 4 digits at the START, ignore trailing junk)
+    # Be careful not to match random digits; ensure it matches time format
+    match = re.match(r"(\d{1,2})(\d{2})(?!\d)", text.strip())
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2))
+        
+        # OCR artifact: if minute is 80-89, it frequently is a misread "30" or "00".
+        if 80 <= minute <= 89:
+            minute = 30  # "8" is usually "3" in cursive OCR
+            
         try:
             return time(hour, minute)
         except ValueError:

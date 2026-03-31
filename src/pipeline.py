@@ -322,6 +322,27 @@ class Pipeline:
             else:
                 text = ""
                 conf = 0.0
+
+            # Per-cell re-OCR for time fields: PaddleOCR often merges adjacent
+            # columns' handwritten times into one text box (e.g. "200pm5:00om 8:00om").
+            # If the cell is empty (box center fell in a neighbor) or suspiciously
+            # long (merged), crop just this cell and re-run OCR on it.
+            _CELL_OCR_FIELDS = {"time_in", "time_out", "total_hours"}
+            if col_name in _CELL_OCR_FIELDS and (text == "" or len(text) > 10):
+                # Use the original color image (not preprocessed) — grayscale
+                # denoising loses color cues that help OCR read handwriting.
+                if self.config.layout.transposed:
+                    cell_crop = image[start_pix:end_pix, row_zone.x_start:row_zone.x_end]
+                else:
+                    cell_crop = image[row_zone.y_start:row_zone.y_end, start_pix:end_pix]
+
+                if cell_crop.size > 0:
+                    cell_result = self.ocr_engine.run(cell_crop)
+                    if cell_result.boxes:
+                        text = cell_result.full_text
+                        conf = min(b.confidence for b in cell_result.boxes)
+                        logger.debug(f"Row {row_idx} {col_name}: per-cell re-OCR → '{text}' (conf={conf:.3f})")
+
             cell_data[col_name] = (text, conf)
             cell_confidences[col_name] = conf
 
