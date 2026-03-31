@@ -72,6 +72,10 @@ def parse_time(text: str) -> Optional[time]:
     # Often OCR reads "AM" or "PM" as "0M", ".0M", "CM"
     text = re.sub(r"[0\.C]M\b", "PM", text)  # best guess fallback
 
+    # Handle standalone 'P' or 'A' at the end like '4:30P' or '4:30 P'
+    text = re.sub(r"([0-9])\s*P$", r"\1 PM", text)
+    text = re.sub(r"([0-9])\s*A$", r"\1 AM", text)
+
     # 1. Try 12-hour format with AM/PM (or A/P)
     match = re.search(r"(\d{1,2}):?(\d{2})\s*([AP]\.?M?\.?)", text)
     if match:

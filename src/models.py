@@ -64,6 +64,7 @@ class TimesheetRow(BaseModel):
     status: RowStatus = RowStatus.ACCEPTED
     validation_errors: list[str] = Field(default_factory=list)
     is_overnight: bool = False
+    is_over_24h_limit: bool = False
 
     @property
     def min_confidence(self) -> float:

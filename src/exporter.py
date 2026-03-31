@@ -65,7 +65,7 @@ def _export_csv(result: ExtractionResult, path: Path) -> None:
     fieldnames = [
         "source_file", "page", "row_index", "employee_name", "patient_name",
         "date", "time_in", "time_out", "total_hours", "calculated_hours",
-        "is_overnight", "notes", "confidence", "status",
+        "is_overnight", "is_over_24h_limit", "notes", "confidence", "status",
     ]
 
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -86,6 +86,7 @@ def _export_csv(result: ExtractionResult, path: Path) -> None:
                     "total_hours": row.total_hours_parsed if row.total_hours_parsed else row.total_hours_text,
                     "calculated_hours": row.calculated_hours() or "",
                     "is_overnight": "Yes" if row.is_overnight else "",
+                    "is_over_24h_limit": "Yes" if getattr(row, "is_over_24h_limit", False) else "",
                     "notes": row.notes,
                     "confidence": f"{row.min_confidence:.2f}",
                     "status": row.status.value,
@@ -144,7 +145,7 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
     headers = [
         "Source File", "Page", "Row #", "Employee Name", "Patient Name",
         "Date", "Time In", "Time Out", "Total Hours", "Calculated Hours",
-        "Overnight", "Notes", "Confidence", "Status", "Issues",
+        "Overnight", "Over 24h Limit", "Notes", "Confidence", "Status", "Issues",
     ]
 
     if headers_needed:
@@ -170,6 +171,7 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
                 row.total_hours_parsed if row.total_hours_parsed is not None else row.total_hours_text,
                 row.calculated_hours() or "",
                 "Yes" if row.is_overnight else "",
+                "Yes" if getattr(row, "is_over_24h_limit", False) else "",
                 row.notes,
                 round(row.min_confidence, 2),
                 row.status.value,

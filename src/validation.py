@@ -27,6 +27,10 @@ def validate_record(record: TimesheetRecord, config: AppConfig) -> list[str]:
     dup_warnings = _check_duplicates(record)
     warnings.extend(dup_warnings)
 
+    # Check for daily 24h limit
+    limit_warnings = _check_daily_hours(record)
+    warnings.extend(limit_warnings)
+
     return warnings
 
 
@@ -107,5 +111,25 @@ def _check_duplicates(record: TimesheetRecord) -> list[str]:
                 row.status = RowStatus.FLAGGED
             else:
                 seen[key] = row.row_index
+
+    return warnings
+
+
+def _check_daily_hours(record: TimesheetRecord) -> list[str]:
+    """Flag rows if daily total hours exceed 24.0."""
+    warnings = []
+    daily_sums: dict[date, float] = {}
+
+    for row in record.rows:
+        calculated = row.calculated_hours()
+        if row.date_parsed and calculated is not None:
+            current_sum = daily_sums.get(row.date_parsed, 0.0)
+            if current_sum + calculated > 24.0:
+                row.is_over_24h_limit = True
+                row.status = RowStatus.FLAGGED
+                row.validation_errors.append("duplicate_shift_exceeds_24h")
+                warnings.append(f"row_{row.row_index}: duplicate_shift_exceeds_24h sum={current_sum + calculated}")
+            else:
+                daily_sums[row.date_parsed] = current_sum + calculated
 
     return warnings

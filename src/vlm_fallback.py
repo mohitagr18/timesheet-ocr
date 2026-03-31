@@ -152,8 +152,8 @@ class VlmFallback:
         """Build a targeted prompt for single-cell extraction."""
         field_hints = {
             "date": "Read the handwritten date in this cell. Format: MM/DD/YYYY.",
-            "time_in": "Read the handwritten clock-in time in this cell. Format: HH:MM (use 12-hour with AM/PM if visible, otherwise 24-hour).",
-            "time_out": "Read the handwritten clock-out time in this cell. Format: HH:MM (use 12-hour with AM/PM if visible, otherwise 24-hour).",
+            "time_in": "Read the handwritten clock-in time exactly as written in this cell (e.g., '8:00 AM', '4:30p'). Do not convert to 24-hour time prematurely.",
+            "time_out": "Read the handwritten clock-out time exactly as written in this cell (e.g., '8:00 AM', '4:30p'). Do not convert to 24-hour time prematurely.",
             "total_hours": "Read the handwritten total hours in this cell. Format: decimal number (e.g., 3.5).",
             "notes": "Read any handwritten notes or text in this cell.",
         }
@@ -174,8 +174,8 @@ class VlmFallback:
             "This image shows one row of a handwritten timesheet. "
             "Extract the following fields from left to right:\n\n"
             "1. Date (MM/DD/YYYY format)\n"
-            "2. Time In (HH:MM format)\n"
-            "3. Time Out (HH:MM format)\n"
+            "2. Time In (exact text written on page, e.g., '8:00 AM', '4:30p')\n"
+            "3. Time Out (exact text written on page, e.g., '8:00 AM', '4:30p')\n"
             "4. Total Hours (decimal number)\n"
             "5. Notes (any additional text)\n\n"
             "Return ONLY a JSON object:\n"
@@ -196,7 +196,8 @@ class VlmFallback:
             "as well as the Recipient's Name (Patient) and the Print RN/LPN Name (Employee).\n"
             "CRITICAL: Do NOT extract the Agency or Provider Name (e.g., do not extract 'Yours Truly, Inc' as the RN/LPN Name).\n"
             "Do NOT extract notes, comments, or other care tasks.\n"
-            "For each distinct day/shift that has Time In and Time Out recorded, create an entry.\n\n"
+            "CRITICAL WARNING: If this image is purely a signature page, or does NOT contain a grid/table of handwritten shifts, "
+            "you MUST return an empty shifts array: []. Do NOT invent, guess, or sequentially generate dates or names.\n\n"
             "Return ONLY a JSON object with this exact structure:\n"
             "{\n"
             '  "recipient_name": "...",\n'
@@ -208,9 +209,11 @@ class VlmFallback:
             "If a field is missing or illegible, use an empty string.\n"
             "CRITICAL: For dates, prioritize extracting the numerical Date (Month/Day/Year) over the Day of the week. "
             "If both exist, extract the numerical date (e.g. '01/07/2026').\n"
-            "Format times as HH:MM.\n"
-            "CRITICAL: Do NOT extract a shift if the Time In and Time Out fields are entirely blank. "
-            "If a page purely contains signatures, text, or no recorded shift times, do NOT hallucinate shifts. Return an empty array for shifts: `[]`."
+            "CRITICAL: For times, strictly extract the exact text written on the page (e.g., '8:00 AM', '4:30p'). "
+            "Do NOT convert the times to 24-hour format prematurely.\n"
+            "CRITICAL: Only extract rows that contain visible, handwritten times. "
+            "If a day or row is blank, or if the page does not contain a timesheet grid, DO NOT output it. "
+            "Return an empty list for the shifts array. Do not infer, guess, or carry over hours for empty cells."
         )
 
     def _parse_full_page_response(self, reply: str) -> dict:
@@ -236,7 +239,7 @@ class VlmFallback:
                         row[key] = str(item.get(key, "")).strip()
                     row["notes"] = "" # Omit notes
                     
-                    if any(row.values()):
+                    if row.get("time_in") or row.get("time_out"):
                         result["shifts"].append(row)
                         
             return result

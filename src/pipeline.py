@@ -7,6 +7,7 @@ import time as time_module
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import re
 import numpy as np
 
 from .confidence import Route, boxes_in_zone, route_by_confidence, should_fallback_entire_row
@@ -176,31 +177,43 @@ class Pipeline:
         """Process a single page image through OCR + validation."""
         preprocessed = preprocess_image(image, self.config)
 
+        # Extract patient name perfectly from the filename
+        # Format: "J.Flemming Timesheets - 012826-020326.pdf" -> "J.Flemming"
+        patient_name = source_file.split("Timesheet")[0].strip(" -_")
+        patient_conf = 1.0
+
         employee_name = ""
         employee_conf = 0.0
-        patient_name = ""
-        patient_conf = 0.0
         rows = []
 
         if getattr(self.config, "extraction_mode", "ppocr_grid") == "vlm_full_page":
             vlm_results = self.vlm.extract_full_page(image)
             
-            patient_name = vlm_results.get("recipient_name", "")
-            patient_conf = 0.9 if patient_name else 0.0
-            
             employee_name = vlm_results.get("rn_lpn_name", "") # RN/LPN mapped to employee
             employee_conf = 0.9 if employee_name else 0.0
             
             valid_row_idx = 0
-            for row_data in vlm_results.get("shifts", []):
+            
+            # Anti-Hallucination Hammer: 
+            # A single week timesheet page legally tops out at 7 shift rows.
+            # If Qwen hallucinates massive sequences (27 days) on a blank signature page, drop the page.
+            shifts_data = vlm_results.get("shifts", [])
+            if len(shifts_data) > 7:
+                logger.warning(f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table.")
+                shifts_data = []
+
+            for row_data in shifts_data:
                 date_text = row_data.get("date", "").strip()
                 time_in_text = row_data.get("time_in", "").strip()
                 time_out_text = row_data.get("time_out", "").strip()
                 hours_text = row_data.get("total_hours", "").strip()
                 notes_text = row_data.get("notes", "").strip()
                 
-                # Robust Post-Processing: Drop hallucinated empty shifts
-                if not time_in_text and not time_out_text and not hours_text:
+                # Robust Post-Processing: Drop hallucinated empty shifts based on noise definition
+                def is_noise(val: str) -> bool:
+                    return len(re.sub(r'[^a-zA-Z0-9]', '', val)) == 0
+
+                if is_noise(time_in_text) and is_noise(time_out_text) and is_noise(hours_text):
                     continue
                 
                 rows.append(TimesheetRow(
@@ -241,9 +254,7 @@ class Pipeline:
                 if sorted_header:
                     employee_name = clean_name(sorted_header[0].text)
                     employee_conf = sorted_header[0].confidence
-                if len(sorted_header) > 1:
-                    patient_name = clean_name(sorted_header[1].text)
-                    patient_conf = sorted_header[1].confidence
+                # patient_name is securely handled by filename extraction above!
 
             for row_idx, row_zone in enumerate(layout.row_zones):
                 row = self._extract_row(
