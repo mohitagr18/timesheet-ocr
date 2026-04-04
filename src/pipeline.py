@@ -21,6 +21,7 @@ from .confidence import (
     route_by_confidence,
     should_fallback_entire_row,
 )
+from .debug_viz import VlmFallbackCell
 from .exporter import export_results
 from .layout import detect_layout
 from .models import (
@@ -39,6 +40,7 @@ from .parser import (
     parse_hours,
     parse_time,
 )
+from .phi import PhiAnonymizer
 from .preprocessing import load_image, pdf_to_images, preprocess_image
 from .review_queue import build_review_queue
 from .validation import validate_record
@@ -63,28 +65,40 @@ class Pipeline:
         self.benchmark = BenchmarkCollector()
         self._ocr_init_time = 0.0
 
-    def process_file(self, file_path: str | Path) -> ExtractionResult:
+    def process_file(
+        self, file_path: str | Path, anonymizer: PhiAnonymizer | None = None
+    ) -> ExtractionResult:
         """Process a single file (PDF or image) through the full pipeline."""
         file_path = Path(file_path)
         start_time = time_module.time()
+
+        if anonymizer is None:
+            anonymizer = PhiAnonymizer([file_path.name])
+
+        anon_filename = anonymizer.anonymize_filename(file_path.name)
 
         logger.info(f"{'=' * 60}")
         logger.info(f"Processing: {file_path.name}")
         logger.info(f"{'=' * 60}")
 
-        # Initialize benchmark
+        # Initialize benchmark with anonymized filename
         file_size_kb = file_path.stat().st_size / 1024 if file_path.exists() else 0
         model_type = "PP-OCRv5_mobile"
+        extraction_mode = getattr(self.config, "extraction_mode", "ppocr_grid")
+        if extraction_mode == "vlm_full_page":
+            model_type = "qwen3-vl:8b"
         device = self.config.ppocr.device
         image_dpi = self.config.preprocessing.target_dpi
         self.benchmark.start_run(
-            source_file=file_path.name,
+            source_file=anon_filename,
             model_type=model_type,
             device=device,
             image_dpi=image_dpi,
             file_size_kb=file_size_kb,
+            extraction_mode=extraction_mode,
         )
         self._ocr_init_time = 0.0
+        self.vlm.reset_stats()
 
         # 1. Load file → list of images (one per page)
         images = self._load_file(file_path)
@@ -95,7 +109,9 @@ class Pipeline:
             logger.info(f"\n--- Page {page_idx + 1}/{len(images)} ---")
 
             page_start_time = time_module.time()
-            record, page_bench = self._process_page(image, file_path.name, page_idx + 1)
+            record, page_bench = self._process_page(
+                image, file_path.name, anon_filename, page_idx + 1, anonymizer
+            )
             page_elapsed = time_module.time() - page_start_time
             page_bench.page_time_s = page_elapsed
             page_bench.image_width = image.shape[1]
@@ -139,7 +155,7 @@ class Pipeline:
         # 3. Build result
         elapsed = time_module.time() - start_time
         result = ExtractionResult(
-            source_file=file_path.name,
+            source_file=anon_filename,
             processing_time_seconds=elapsed,
             total_pages=len(images),
             records=records,
@@ -160,6 +176,11 @@ class Pipeline:
         )
         bench_file = self.benchmark.export(self.config.output_path)
         output_files.append(bench_file)
+
+        # Snapshot for combined export
+        extraction_mode = getattr(self.config, "extraction_mode", "ppocr_grid")
+        mode_label = "vlm" if extraction_mode == "vlm_full_page" else "ppocr"
+        self.benchmark.snapshot_run(mode=mode_label)
 
         # 6. Summary
         logger.info(f"\n{'=' * 60}")
@@ -227,6 +248,10 @@ class Pipeline:
 
         logger.info(f"Found {len(files)} file(s) in input directory")
 
+        # Create PHI anonymizer with all filenames for deterministic mapping
+        filenames = [f.name for f in files]
+        anonymizer = PhiAnonymizer(filenames)
+
         results = []
         for file_path in files:
             if file_path.name in processed_files:
@@ -236,10 +261,17 @@ class Pipeline:
                 continue
 
             try:
-                result = self.process_file(file_path)
+                result = self.process_file(file_path, anonymizer)
                 results.append(result)
             except Exception as e:
                 logger.error(f"Failed to process {file_path.name}: {e}", exc_info=True)
+
+        # Export combined benchmark across all files
+        if results and len(self.benchmark._runs) > 1:
+            combined_file = self.benchmark.export_combined(
+                self.config.output_path, anonymizer
+            )
+            logger.info(f"Combined benchmark exported: {combined_file}")
 
         return results
 
@@ -251,17 +283,21 @@ class Pipeline:
             return [load_image(file_path)]
 
     def _process_page(
-        self, image: np.ndarray, source_file: str, page_number: int
+        self,
+        image: np.ndarray,
+        source_file: str,
+        anon_filename: str,
+        page_number: int,
+        anonymizer: PhiAnonymizer,
     ) -> tuple[TimesheetRecord, PageMetrics]:
         """Process a single page image through OCR + validation."""
-        page_metrics = PageMetrics(source_file=source_file, page_number=page_number)
+        page_metrics = PageMetrics(source_file=anon_filename, page_number=page_number)
 
         preprocess_start = time_module.time()
         preprocessed = preprocess_image(image, self.config)
         preprocess_time = time_module.time() - preprocess_start
 
-        # Extract patient name perfectly from the filename
-        # Format: "J.Flemming Timesheets - 012826-020326.pdf" -> "J.Flemming"
+        # Extract patient name from the original filename
         patient_name = source_file.split("Timesheet")[0].strip(" -_")
         patient_conf = 1.0
 
@@ -275,68 +311,233 @@ class Pipeline:
         rows = []
 
         if getattr(self.config, "extraction_mode", "ppocr_grid") == "vlm_full_page":
-            vlm_start = time_module.time()
-            vlm_results = self.vlm.extract_full_page(image)
-            vlm_time = time_module.time() - vlm_start
+            # Quick OCR pass for page classification (grid vs signature)
+            ocr_start = time_module.time()
+            if not self.ocr_engine._initialized:
+                init_start = time_module.time()
+                self.ocr_engine._ensure_initialized()
+                self._ocr_init_time = time_module.time() - init_start
+                page_metrics.ocr_init_time_s = self._ocr_init_time
+            ocr_result = self.ocr_engine.run(preprocessed)
+            page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
+            page_metrics.total_boxes_detected = len(ocr_result.boxes)
 
-            employee_name = vlm_results.get(
-                "rn_lpn_name", ""
-            )  # RN/LPN mapped to employee
-            employee_conf = 0.9 if employee_name else 0.0
+            # Detect layout for zone coordinates
+            layout_start = time_module.time()
+            layout = detect_layout(image, self.config, ocr_result.boxes)
+            page_metrics.layout_detection_time_s = time_module.time() - layout_start
 
-            valid_row_idx = 0
+            sig_threshold = self.config.debug.signature_ocr_threshold
+            is_sig_page = PhiAnonymizer.is_signature_page(
+                len(ocr_result.boxes), sig_threshold
+            )
 
-            # Anti-Hallucination Hammer:
-            # A single week timesheet page legally tops out at 7 shift rows.
-            # If Qwen hallucinates massive sequences (27 days) on a blank signature page, drop the page.
-            shifts_data = vlm_results.get("shifts", [])
-            if len(shifts_data) > 7:
-                logger.warning(
-                    f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+            if is_sig_page:
+                # Signature page: extract employee name from footer zone, skip VLM
+                logger.info(
+                    f"Page {page_number} is a signature page ({len(ocr_result.boxes)} boxes < {sig_threshold} threshold). Skipping VLM extraction."
                 )
-                shifts_data = []
-
-            for row_data in shifts_data:
-                date_text = row_data.get("date", "").strip()
-                time_in_text = row_data.get("time_in", "").strip()
-                time_out_text = row_data.get("time_out", "").strip()
-                hours_text = row_data.get("total_hours", "").strip()
-                notes_text = row_data.get("notes", "").strip()
-
-                # Robust Post-Processing: Drop hallucinated empty shifts based on noise definition
-                def is_noise(val: str) -> bool:
-                    return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
-
-                if (
-                    is_noise(time_in_text)
-                    and is_noise(time_out_text)
-                    and is_noise(hours_text)
-                ):
-                    continue
-
-                rows.append(
-                    TimesheetRow(
-                        row_index=valid_row_idx,
-                        date_text=date_text,
-                        date_parsed=parse_date(date_text, expected_year),
-                        time_in_text=time_in_text,
-                        time_in_parsed=parse_time(time_in_text),
-                        time_out_text=time_out_text,
-                        time_out_parsed=parse_time(time_out_text),
-                        total_hours_text=hours_text,
-                        total_hours_parsed=parse_hours(hours_text),
-                        notes=notes_text.strip(),
-                        date_confidence=0.9,
-                        time_in_confidence=0.9,
-                        time_out_confidence=0.9,
-                        hours_confidence=0.9,
-                        date_source=OcrSource.VLM,
-                        time_in_source=OcrSource.VLM,
-                        time_out_source=OcrSource.VLM,
-                        hours_source=OcrSource.VLM,
+                footer_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.footer_zone.x_start,
+                    layout.footer_zone.y_start,
+                    layout.footer_zone.x_end,
+                    layout.footer_zone.y_end,
+                )
+                if footer_boxes:
+                    sorted_footer = sorted(
+                        footer_boxes, key=lambda b: (b.y_center, b.x_center)
                     )
+                    for box in sorted_footer:
+                        text = clean_name(box.text)
+                        if text and len(text) > 2:
+                            employee_name = text
+                            employee_conf = box.confidence
+                            break
+            else:
+                # Grid page: proceed with VLM full page extraction
+                vlm_start = time_module.time()
+                vlm_results = self.vlm.extract_full_page(image)
+                page_metrics.vlm_inference_time_s = time_module.time() - vlm_start
+
+                employee_name = vlm_results.get("rn_lpn_name", "")
+                employee_conf = 0.9 if employee_name else 0.0
+
+                valid_row_idx = 0
+                shifts_data = vlm_results.get("shifts", [])
+                if len(shifts_data) > 7:
+                    logger.warning(
+                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                    )
+                    shifts_data = []
+
+                for row_data in shifts_data:
+                    date_text = row_data.get("date", "").strip()
+                    time_in_text = row_data.get("time_in", "").strip()
+                    time_out_text = row_data.get("time_out", "").strip()
+                    hours_text = row_data.get("total_hours", "").strip()
+
+                    def is_noise(val: str) -> bool:
+                        return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
+
+                    if (
+                        is_noise(time_in_text)
+                        and is_noise(time_out_text)
+                        and is_noise(hours_text)
+                    ):
+                        continue
+
+                    rows.append(
+                        TimesheetRow(
+                            row_index=valid_row_idx,
+                            date_text=date_text,
+                            date_parsed=parse_date(date_text, expected_year),
+                            time_in_text=time_in_text,
+                            time_in_parsed=parse_time(time_in_text),
+                            time_out_text=time_out_text,
+                            time_out_parsed=parse_time(time_out_text),
+                            total_hours_text=hours_text,
+                            total_hours_parsed=parse_hours(hours_text),
+                            date_confidence=0.9,
+                            time_in_confidence=0.9,
+                            time_out_confidence=0.9,
+                            hours_confidence=0.9,
+                            date_source=OcrSource.VLM,
+                            time_in_source=OcrSource.VLM,
+                            time_out_source=OcrSource.VLM,
+                            hours_source=OcrSource.VLM,
+                        )
+                    )
+                    valid_row_idx += 1
+
+                # VLM debug visualization (if enabled, grid pages only)
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                ):
+                    from . import vlm_debug_viz
+
+                    current_record = TimesheetRecord(
+                        source_file=anon_filename,
+                        page_number=page_number,
+                        employee_name=anonymizer.anonymize_employee(employee_name),
+                        employee_name_confidence=employee_conf,
+                        patient_name=anonymizer.anonymize_patient(patient_name),
+                        patient_name_confidence=patient_conf,
+                        rows=rows,
+                    )
+                    vlm_debug_viz.render_vlm_page(
+                        image=image,
+                        records=[current_record],
+                        page_number=page_number,
+                        source_file=anon_filename,
+                        output_dir=self.config.debug_output_path,
+                    )
+
+            if is_sig_page:
+                # Signature page: extract employee name from footer zone, skip VLM
+                logger.info(
+                    f"Page {page_number} is a signature page ({len(ocr_result.boxes)} boxes < {sig_threshold} threshold). Skipping VLM extraction."
                 )
-                valid_row_idx += 1
+                footer_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.footer_zone.x_start,
+                    layout.footer_zone.y_start,
+                    layout.footer_zone.x_end,
+                    layout.footer_zone.y_end,
+                )
+                if footer_boxes:
+                    sorted_footer = sorted(
+                        footer_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    # Look for employee name in footer (usually "Print RN/LPN Name" area)
+                    for box in sorted_footer:
+                        text = clean_name(box.text)
+                        if text and len(text) > 2:
+                            employee_name = text
+                            employee_conf = box.confidence
+                            break
+            else:
+                # Grid page: proceed with VLM full page extraction
+                vlm_start = time_module.time()
+                vlm_results = self.vlm.extract_full_page(image)
+                page_metrics.vlm_inference_time_s = time_module.time() - vlm_start
+
+                employee_name = vlm_results.get("rn_lpn_name", "")
+                employee_conf = 0.9 if employee_name else 0.0
+
+                valid_row_idx = 0
+
+                # Anti-Hallucination Hammer:
+                shifts_data = vlm_results.get("shifts", [])
+                if len(shifts_data) > 7:
+                    logger.warning(
+                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                    )
+                    shifts_data = []
+
+                for row_data in shifts_data:
+                    date_text = row_data.get("date", "").strip()
+                    time_in_text = row_data.get("time_in", "").strip()
+                    time_out_text = row_data.get("time_out", "").strip()
+                    hours_text = row_data.get("total_hours", "").strip()
+
+                    def is_noise(val: str) -> bool:
+                        return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
+
+                    if (
+                        is_noise(time_in_text)
+                        and is_noise(time_out_text)
+                        and is_noise(hours_text)
+                    ):
+                        continue
+
+                    rows.append(
+                        TimesheetRow(
+                            row_index=valid_row_idx,
+                            date_text=date_text,
+                            date_parsed=parse_date(date_text, expected_year),
+                            time_in_text=time_in_text,
+                            time_in_parsed=parse_time(time_in_text),
+                            time_out_text=time_out_text,
+                            time_out_parsed=parse_time(time_out_text),
+                            total_hours_text=hours_text,
+                            total_hours_parsed=parse_hours(hours_text),
+                            date_confidence=0.9,
+                            time_in_confidence=0.9,
+                            time_out_confidence=0.9,
+                            hours_confidence=0.9,
+                            date_source=OcrSource.VLM,
+                            time_in_source=OcrSource.VLM,
+                            time_out_source=OcrSource.VLM,
+                            hours_source=OcrSource.VLM,
+                        )
+                    )
+                    valid_row_idx += 1
+
+                # VLM debug visualization (if enabled, grid pages only)
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                ):
+                    from . import vlm_debug_viz
+
+                    current_record = TimesheetRecord(
+                        source_file=anon_filename,
+                        page_number=page_number,
+                        employee_name=anonymizer.anonymize_employee(employee_name),
+                        employee_name_confidence=employee_conf,
+                        patient_name=anonymizer.anonymize_patient(patient_name),
+                        patient_name_confidence=patient_conf,
+                        rows=rows,
+                    )
+                    vlm_debug_viz.render_vlm_page(
+                        image=image,
+                        records=[current_record],
+                        page_number=page_number,
+                        source_file=anon_filename,
+                        output_dir=self.config.debug_output_path,
+                    )
         else:
             ocr_start = time_module.time()
             if not self.ocr_engine._initialized:
@@ -352,64 +553,114 @@ class Pipeline:
             layout = detect_layout(image, self.config, ocr_result.boxes)
             page_metrics.layout_detection_time_s = time_module.time() - layout_start
 
-            # Generate week dates from filename for transposed layouts
-            generated_dates = None
-            if self.config.layout.transposed:
-                generated_dates = extract_week_dates(
-                    source_file,
-                    self.config.validation.week_start_day,
-                    self.config.validation.week_length,
-                )
-                if generated_dates:
-                    logger.info(
-                        f"Generated week dates: {generated_dates[0]} → {generated_dates[-1]}"
-                    )
-
-            header_boxes = boxes_in_zone(
-                ocr_result.boxes,
-                layout.header_zone.x_start,
-                layout.header_zone.y_start,
-                layout.header_zone.x_end,
-                layout.header_zone.y_end,
+            # Signature page detection — skip row extraction
+            sig_threshold = self.config.debug.signature_ocr_threshold
+            is_sig_page = PhiAnonymizer.is_signature_page(
+                len(ocr_result.boxes), sig_threshold
             )
 
-            if header_boxes:
-                sorted_header = sorted(
-                    header_boxes, key=lambda b: (b.y_center, b.x_center)
+            if is_sig_page:
+                logger.info(
+                    f"Page {page_number} is a signature page ({len(ocr_result.boxes)} boxes < {sig_threshold} threshold). Skipping row extraction."
                 )
-                if sorted_header:
-                    employee_name = clean_name(sorted_header[0].text)
-                    employee_conf = sorted_header[0].confidence
-                # patient_name is securely handled by filename extraction above!
-
-            extraction_start = time_module.time()
-            empty_rows = 0
-            for row_idx, row_zone in enumerate(layout.row_zones):
-                row = self._extract_row(
-                    image=image,
-                    preprocessed=preprocessed,
-                    all_boxes=ocr_result.boxes,
-                    row_zone=row_zone,
-                    row_idx=row_idx,
-                    layout=layout,
-                    expected_year=expected_year,
-                    generated_dates=generated_dates,
+                # Only extract employee name from header zone
+                header_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.header_zone.x_start,
+                    layout.header_zone.y_start,
+                    layout.header_zone.x_end,
+                    layout.header_zone.y_end,
                 )
-                if row is not None:
-                    rows.append(row)
-                else:
-                    empty_rows += 1
-            page_metrics.extraction_time_s = time_module.time() - extraction_start
-            page_metrics.rows_extracted = len(rows)
-            page_metrics.empty_rows_skipped = empty_rows
+                if header_boxes:
+                    sorted_header = sorted(
+                        header_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    if sorted_header:
+                        employee_name = clean_name(sorted_header[0].text)
+                        employee_conf = sorted_header[0].confidence
+            else:
+                # Grid page — extract rows
+                # Generate week dates from filename for transposed layouts
+                generated_dates = None
+                if self.config.layout.transposed:
+                    generated_dates = extract_week_dates(
+                        source_file,
+                        self.config.validation.week_start_day,
+                        self.config.validation.week_length,
+                    )
+                    if generated_dates:
+                        logger.info(
+                            f"Generated week dates: {generated_dates[0]} → {generated_dates[-1]}"
+                        )
 
-        # 6. Build record
+                header_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.header_zone.x_start,
+                    layout.header_zone.y_start,
+                    layout.header_zone.x_end,
+                    layout.header_zone.y_end,
+                )
+
+                if header_boxes:
+                    sorted_header = sorted(
+                        header_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    if sorted_header:
+                        employee_name = clean_name(sorted_header[0].text)
+                        employee_conf = sorted_header[0].confidence
+
+                extraction_start = time_module.time()
+                empty_rows = 0
+                total_vlm_fallbacks = 0
+                all_vlm_fallbacks: list[VlmFallbackCell] = []
+                for row_idx, row_zone in enumerate(layout.row_zones):
+                    row, vlm_count, vlm_cells = self._extract_row(
+                        image=image,
+                        preprocessed=preprocessed,
+                        all_boxes=ocr_result.boxes,
+                        row_zone=row_zone,
+                        row_idx=row_idx,
+                        layout=layout,
+                        expected_year=expected_year,
+                        generated_dates=generated_dates,
+                    )
+                    total_vlm_fallbacks += vlm_count
+                    all_vlm_fallbacks.extend(vlm_cells)
+                    if row is not None:
+                        rows.append(row)
+                    else:
+                        empty_rows += 1
+                page_metrics.extraction_time_s = time_module.time() - extraction_start
+                page_metrics.rows_extracted = len(rows)
+                page_metrics.empty_rows_skipped = empty_rows
+                page_metrics.vlm_fallbacks = total_vlm_fallbacks
+
+                # Debug visualization (if enabled, skip for signature pages)
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                    and not is_sig_page
+                ):
+                    from . import debug_viz
+
+                    debug_viz.render_page(
+                        image=image,
+                        ocr_boxes=ocr_result.boxes,
+                        layout=layout,
+                        field_bands=layout.field_bands,
+                        vlm_fallbacks=all_vlm_fallbacks,
+                        page_number=page_number,
+                        source_file=anon_filename,
+                        output_dir=self.config.debug_output_path,
+                    )
+
+        # 6. Build record with anonymized names
         record = TimesheetRecord(
-            source_file=source_file,
+            source_file=anon_filename,
             page_number=page_number,
-            employee_name=employee_name,
+            employee_name=anonymizer.anonymize_employee(employee_name),
             employee_name_confidence=employee_conf,
-            patient_name=patient_name,
+            patient_name=anonymizer.anonymize_patient(patient_name),
             patient_name_confidence=patient_conf,
             rows=rows,
         )
@@ -431,8 +682,11 @@ class Pipeline:
         layout,
         expected_year=None,
         generated_dates=None,
-    ) -> TimesheetRow | None:
-        """Extract data from a single table row using OCR boxes + fallback."""
+    ) -> tuple[TimesheetRow | None, int, list[VlmFallbackCell]]:
+        """Extract data from a single table row using OCR boxes + fallback.
+
+        Returns (row, vlm_fallback_count, vlm_fallback_cells).
+        """
         h = layout.image_height
         w = layout.image_width
 
@@ -455,6 +709,8 @@ class Pipeline:
         # Find OCR boxes in each column of this row
         cell_data: dict[str, tuple[str, float]] = {}
         cell_confidences: dict[str, float] = {}
+        vlm_fallbacks = 0
+        vlm_cells: list[VlmFallbackCell] = []
 
         for col_name, (start_pix, end_pix) in field_bounds.items():
             col_boxes = boxes_in_zone(
@@ -475,7 +731,7 @@ class Pipeline:
 
         # Check if this row has any meaningful content
         if all(text == "" for text, _ in cell_data.values()):
-            return None  # Empty row, skip
+            return None, 0, []  # Empty row, skip
 
         # Route through confidence check
         row_data = dict(cell_data)  # Copy for potential VLM updates
@@ -485,6 +741,7 @@ class Pipeline:
         for col_name, conf in cell_confidences.items():
             route = route_by_confidence(conf, self.config)
             if route == Route.FALLBACK:
+                vlm_fallbacks += 1
                 start_pix, end_pix = field_bounds[col_name]
                 cell_crop = image[row_zone.y_start : row_zone.y_end, start_pix:end_pix]
 
@@ -494,10 +751,23 @@ class Pipeline:
                 if vlm_value:
                     row_data[col_name] = (vlm_value, vlm_conf)
                     sources[col_name] = OcrSource.VLM
+                    vlm_cells.append(
+                        VlmFallbackCell(
+                            row_idx=row_idx,
+                            field_name=col_name,
+                            x_start=start_pix,
+                            y_start=row_zone.y_start,
+                            x_end=end_pix,
+                            y_end=row_zone.y_end,
+                            vlm_text=vlm_value,
+                            vlm_conf=vlm_conf,
+                        )
+                    )
 
-        return self._build_timesheet_row(
+        row = self._build_timesheet_row(
             row_idx, row_data, sources, field_bounds, expected_year
         )
+        return row, vlm_fallbacks, vlm_cells
 
     def _extract_transposed_row(
         self,
@@ -508,7 +778,7 @@ class Pipeline:
         field_bounds,
         generated_dates,
         expected_year=None,
-    ) -> TimesheetRow | None:
+    ) -> tuple[TimesheetRow | None, int, list[VlmFallbackCell]]:
         """Extract data from a transposed row (column) using spatial matching.
 
         Strategy:
@@ -520,9 +790,13 @@ class Pipeline:
 
         Note: PaddleOCR often misses handwritten text. When spatial matching
         returns empty, VLM fallback handles it.
+
+        Returns (row, vlm_fallback_count, vlm_fallback_cells).
         """
         x_left = row_zone.x_start
         x_right = row_zone.x_end
+        vlm_fallbacks = 0
+        vlm_cells: list[VlmFallbackCell] = []
 
         # DATE: Use generated date
         if generated_dates and row_idx < len(generated_dates):
@@ -561,6 +835,7 @@ class Pipeline:
                 )
             else:
                 # VLM fallback on cropped cell
+                vlm_fallbacks += 1
                 cell_crop = image[y_start:y_end, x_left:x_right]
                 if cell_crop.size > 0:
                     vlm_value, vlm_conf = self.vlm.extract_cell_value(
@@ -572,6 +847,18 @@ class Pipeline:
                     logger.debug(
                         f"Row {row_idx} {field_name}: VLM → '{text}' (conf={conf:.3f})"
                     )
+                    vlm_cells.append(
+                        VlmFallbackCell(
+                            row_idx=row_idx,
+                            field_name=field_name,
+                            x_start=x_left,
+                            y_start=y_start,
+                            x_end=x_right,
+                            y_end=y_end,
+                            vlm_text=vlm_value,
+                            vlm_conf=vlm_conf,
+                        )
+                    )
                 else:
                     text = ""
                     conf = 0.0
@@ -580,34 +867,17 @@ class Pipeline:
             row_data[field_name] = (text, conf)
             sources[field_name] = source
 
-        # Notes: full range band, try OCR first
-        notes_y_start, notes_y_end = field_bounds.get("notes", (0, 0))
-        notes_boxes = [
-            b
-            for b in all_boxes
-            if x_left <= b.x_center <= x_right
-            and notes_y_start <= b.y_center <= notes_y_end
-            and b.text.strip()
-        ]
-        if notes_boxes:
-            notes_boxes.sort(key=lambda b: b.y_center)
-            notes_text = " ".join(b.text for b in notes_boxes)
-        else:
-            notes_text = ""
-
-        row_data["notes"] = (notes_text, 0.0)
-        sources["notes"] = OcrSource.PPOCR
-
         # Skip if no meaningful content
         if all(
             not row_data.get(k, ("", ""))[0].strip()
             for k in ["time_in", "time_out", "total_hours"]
         ):
-            return None
+            return None, vlm_fallbacks, vlm_cells
 
-        return self._build_timesheet_row(
+        row = self._build_timesheet_row(
             row_idx, row_data, sources, field_bounds, expected_year
         )
+        return row, vlm_fallbacks, vlm_cells
 
     def _build_timesheet_row(
         self, row_idx, row_data, sources, field_bounds, expected_year=None
@@ -617,7 +887,6 @@ class Pipeline:
         time_in_text, time_in_conf = row_data.get("time_in", ("", 0.0))
         time_out_text, time_out_conf = row_data.get("time_out", ("", 0.0))
         hours_text, hours_conf = row_data.get("total_hours", ("", 0.0))
-        notes_text, _ = row_data.get("notes", ("", 0.0))
 
         row = TimesheetRow(
             row_index=row_idx,
@@ -629,7 +898,6 @@ class Pipeline:
             time_out_parsed=parse_time(time_out_text),
             total_hours_text=hours_text,
             total_hours_parsed=parse_hours(hours_text),
-            notes=notes_text.strip(),
             date_confidence=date_conf,
             time_in_confidence=time_in_conf,
             time_out_confidence=time_out_conf,

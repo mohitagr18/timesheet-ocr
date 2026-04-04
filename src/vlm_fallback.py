@@ -29,6 +29,11 @@ class VlmFallback:
         self.config = config
         self._client = None
         self._available: Optional[bool] = None
+        # Metrics tracking
+        self._total_calls: int = 0
+        self._empty_responses: int = 0
+        self._json_parse_failures: int = 0
+        self._total_fields_queried: int = 0
 
     def _ensure_client(self) -> bool:
         """Initialize Ollama client and check availability."""
@@ -65,6 +70,9 @@ class VlmFallback:
         if not self._ensure_client():
             return ("", 0.0)
 
+        self._total_calls += 1
+        self._total_fields_queried += 1
+
         prompt = self._build_cell_prompt(field_name, expected_year)
         img_b64 = self._image_to_base64(image)
 
@@ -83,10 +91,14 @@ class VlmFallback:
 
             reply = response["message"]["content"].strip()
             logger.debug(f"VLM cell response for {field_name}: {reply}")
-            return self._parse_cell_response(reply, field_name)
+            value, confidence = self._parse_cell_response(reply, field_name)
+            if not value:
+                self._empty_responses += 1
+            return (value, confidence)
 
         except Exception as e:
             logger.error(f"VLM extraction failed for {field_name}: {e}")
+            self._empty_responses += 1
             return ("", 0.0)
 
     def extract_row(
@@ -154,6 +166,7 @@ class VlmFallback:
             )
 
             reply = response["message"]["content"].strip()
+            logger.debug(f"VLM full page response: {reply[:200]}...")
             return self._parse_full_page_response(reply)
 
         except Exception as e:
@@ -303,16 +316,42 @@ class VlmFallback:
 
     @staticmethod
     def _extract_json(text: str) -> dict:
-        """Extract JSON object from a text response (handles markdown code blocks)."""
-        # Strip markdown code fences if present
+        """Extract JSON object from a text response (handles markdown code blocks and thinking text)."""
+        import re
+
         text = text.strip()
+
+        # Strip markdown code fences if present
         if text.startswith("```"):
             lines = text.split("\n")
-            # Remove first and last lines (fences)
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines)
 
-        return json.loads(text)
+        # Try direct parse first
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Qwen3-VL "thinking" mode: find JSON object in text
+        # Look for the last { ... } block in the response
+        brace_start = text.rfind("{")
+        if brace_start != -1:
+            json_text = text[brace_start:]
+            try:
+                return json.loads(json_text)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Fallback: use regex to find JSON-like pattern
+        match = re.search(r"\{[^{}]*\}", text)
+        if match:
+            try:
+                return json.loads(match.group())
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        raise json.JSONDecodeError("No valid JSON found in response", text, 0)
 
     @staticmethod
     def _image_to_base64(image: np.ndarray, max_dim: int = 2048) -> str:
@@ -331,3 +370,22 @@ class VlmFallback:
         buffer = io.BytesIO()
         pil_img.save(buffer, format="JPEG", quality=85)
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def get_stats(self) -> dict:
+        """Return VLM metrics for benchmarking."""
+        total_fields = max(self._total_fields_queried, 1)
+        return {
+            "total_calls": self._total_calls,
+            "empty_responses": self._empty_responses,
+            "json_parse_failures": self._json_parse_failures,
+            "total_fields_queried": self._total_fields_queried,
+            "empty_response_rate": self._empty_responses / total_fields,
+            "json_parse_success_rate": (1.0 - self._json_parse_failures / total_fields),
+        }
+
+    def reset_stats(self) -> None:
+        """Reset metrics for a new run."""
+        self._total_calls = 0
+        self._empty_responses = 0
+        self._json_parse_failures = 0
+        self._total_fields_queried = 0

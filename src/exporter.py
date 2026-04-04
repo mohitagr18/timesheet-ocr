@@ -45,16 +45,17 @@ def export_results(result: ExtractionResult, config: AppConfig) -> list[Path]:
         _export_excel(result, xlsx_path, config)
         created_files.append(xlsx_path)
 
-    # Always export review queue if there are flagged items
-    if result.review_items:
+    # Always export review queue if there are flagged items and toggle is on
+    if result.review_items and config.export.include_review_json:
         review_path = output_dir / f"{stem}_review.json"
         _export_review_queue(result, review_path)
         created_files.append(review_path)
 
-    # Always export validation report
-    report_path = output_dir / f"{stem}_report.json"
-    _export_report(result, report_path)
-    created_files.append(report_path)
+    # Always export validation report if toggle is on
+    if config.export.include_report_json:
+        report_path = output_dir / f"{stem}_report.json"
+        _export_report(result, report_path)
+        created_files.append(report_path)
 
     logger.info(f"Exported {len(created_files)} files to {output_dir}")
     return created_files
@@ -97,7 +98,6 @@ def _export_csv(result: ExtractionResult, path: Path) -> None:
         "calculated_hours",
         "is_overnight",
         "is_over_24h_limit",
-        "notes",
         "confidence",
         "status",
     ]
@@ -141,7 +141,6 @@ def _export_csv(result: ExtractionResult, path: Path) -> None:
                     "is_over_24h_limit": "Yes"
                     if getattr(row, "is_over_24h_limit", False)
                     else "",
-                    "notes": row.notes,
                     "confidence": f"{row.min_confidence:.2f}",
                     "status": row.status.value,
                 }
@@ -222,7 +221,6 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
         "Calculated Hours",
         "Overnight",
         "Over 24h Limit",
-        "Notes",
         "Confidence",
         "Status",
         "Issues",
@@ -261,7 +259,6 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
             row.calculated_hours() or "",
             "Yes" if row.is_overnight else "",
             "Yes" if getattr(row, "is_over_24h_limit", False) else "",
-            row.notes,
             round(row.min_confidence, 2),
             row.status.value,
             "; ".join(row.validation_errors) if row.validation_errors else "",

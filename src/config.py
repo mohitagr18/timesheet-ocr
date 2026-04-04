@@ -67,6 +67,16 @@ class ValidationConfig(BaseModel):
 class ExportConfig(BaseModel):
     formats: list[str] = ["xlsx", "csv", "json"]
     excel_sheet_name: str = "Timesheet Data"
+    include_review_json: bool = True
+    include_report_json: bool = True
+
+
+class DebugConfig(BaseModel):
+    visualize_ocr: bool = False
+    output_dir: str = "output/debug"
+    anonymize_phi: bool = True
+    signature_zone_fraction: float = 0.30
+    signature_ocr_threshold: int = 100
 
 
 # ── Top-level config ────────────────────────────────────────────────
@@ -82,6 +92,7 @@ class AppConfig(BaseModel):
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    debug: DebugConfig = Field(default_factory=DebugConfig)
 
     # Resolved absolute paths (set during loading)
     project_root: Path = Field(default_factory=lambda: Path.cwd())
@@ -97,6 +108,10 @@ class AppConfig(BaseModel):
     @property
     def samples_path(self) -> Path:
         return self.project_root / self.paths.samples_dir
+
+    @property
+    def debug_output_path(self) -> Path:
+        return self.project_root / self.debug.output_dir
 
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:

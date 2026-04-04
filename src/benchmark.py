@@ -27,6 +27,7 @@ class PageMetrics:
     ocr_init_time_s: float = 0.0
     ocr_inference_time_s: float = 0.0
     layout_detection_time_s: float = 0.0
+    vlm_inference_time_s: float = 0.0
     extraction_time_s: float = 0.0
     validation_time_s: float = 0.0
     total_boxes_detected: int = 0
@@ -89,6 +90,7 @@ class RunMetrics:
 
     source_file: str = ""
     model_type: str = ""
+    extraction_mode: str = "ppocr_grid"
     device: str = ""
     image_dpi: int = 0
     image_dimensions: str = ""
@@ -118,6 +120,7 @@ class BenchmarkCollector:
         self.run: RunMetrics = RunMetrics()
         self.pages: list[PageMetrics] = []
         self.rows: list[RowMetrics] = []
+        self._runs: list[tuple[RunMetrics, list[PageMetrics], list[RowMetrics]]] = []
 
     def start_run(
         self,
@@ -126,20 +129,34 @@ class BenchmarkCollector:
         device: str,
         image_dpi: int,
         file_size_kb: float,
+        extraction_mode: str = "ppocr_grid",
     ) -> None:
         self.run = RunMetrics(
             source_file=source_file,
             model_type=model_type,
+            extraction_mode=extraction_mode,
             device=device,
             image_dpi=image_dpi,
             file_size_kb=file_size_kb,
         )
+        self.pages = []
+        self.rows = []
 
     def add_page(self, page: PageMetrics) -> None:
         self.pages.append(page)
 
     def add_row(self, row: RowMetrics) -> None:
         self.rows.append(row)
+
+    def snapshot_run(self, mode: str = "ppocr") -> None:
+        """Snapshot the current run data for later combined export."""
+        import copy
+
+        self.run.extraction_mode = mode
+        run_copy = copy.deepcopy(self.run)
+        pages_copy = copy.deepcopy(self.pages)
+        rows_copy = copy.deepcopy(self.rows)
+        self._runs.append((run_copy, pages_copy, rows_copy))
 
     def finalize(self, total_time_s: float) -> None:
         """Compute aggregate statistics after all pages/rows are collected."""
@@ -243,6 +260,43 @@ class BenchmarkCollector:
         wb.save(benchmark_path)
         logger.info(f"Benchmark exported: {benchmark_path}")
         return benchmark_path
+
+    def export_combined(self, output_dir: Path, anonymizer=None) -> Path:
+        """Export a combined benchmark across all runs with paper-ready table format."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+
+        if not self._runs:
+            raise ValueError("No runs to combine. Call snapshot_run() after each file.")
+
+        wb = Workbook()
+
+        # ── Sheet 1: Per-File Results (paper-ready table) ──
+        ws = wb.active
+        ws.title = "Per-File Results"
+        _write_combined_summary(ws, self._runs)
+
+        # ── Sheet 2: Page Details ──
+        all_pages: list[PageMetrics] = []
+        for _, pages, _ in self._runs:
+            all_pages.extend(pages)
+        _write_page_details(wb.create_sheet("Page Details"), all_pages)
+
+        # ── Sheet 3: Row-Level ──
+        all_rows: list[RowMetrics] = []
+        for _, _, rows in self._runs:
+            all_rows.extend(rows)
+        _write_row_level(wb.create_sheet("Row-Level"), all_rows)
+
+        # ── Sheet 4: Corrections ──
+        _write_corrections(wb.create_sheet("Corrections"), all_rows)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        combined_path = output_dir / "benchmark_combined.xlsx"
+        wb.save(combined_path)
+        logger.info(f"Combined benchmark exported: {combined_path}")
+        return combined_path
 
 
 def _levenshtein_cer(s1: str, s2: str) -> float:
@@ -525,3 +579,312 @@ def _classify_correction(raw: str, corrected: str) -> str:
     if raw.isdigit() and ":" in corrected:
         return "time format reconstruction"
     return "parser correction"
+
+
+def _write_combined_summary(
+    ws, runs: list[tuple[RunMetrics, list[PageMetrics], list[RowMetrics]]]
+) -> None:
+    """Write a paper-ready combined summary table.
+
+    Rows = metrics, columns = files + Combined total.
+    """
+    # Build metric rows
+    metrics: list[tuple[str, str, list[float | int | str]]] = []
+
+    file_names = []
+    for run, pages, rows in runs:
+        file_names.append(run.source_file)
+
+    # Header row
+    headers = ["Metric"] + file_names + ["Combined"]
+    for col_idx, h in enumerate(headers, 1):
+        ws.cell(row=1, column=col_idx, value=h)
+    _style_header_row(ws, 1, len(headers))
+
+    # 1. Model Type
+    ws.cell(row=2, column=1, value="Model Type")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=2, column=i, value=run.model_type)
+    ws.cell(row=2, column=len(runs) + 2, value="—")
+
+    # 2. Device
+    ws.cell(row=3, column=1, value="Device")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=3, column=i, value=run.device)
+    ws.cell(row=3, column=len(runs) + 2, value="—")
+
+    # 3. Pages
+    ws.cell(row=4, column=1, value="Pages")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=4, column=i, value=run.num_pages)
+    ws.cell(row=4, column=len(runs) + 2, value=sum(run.num_pages for run, _, _ in runs))
+
+    # 4. Total Time (s)
+    ws.cell(row=5, column=1, value="Total Time (s)")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=5, column=i, value=round(run.total_time_s, 2))
+    ws.cell(
+        row=5,
+        column=len(runs) + 2,
+        value=round(sum(run.total_time_s for run, _, _ in runs), 2),
+    )
+
+    # 5. Avg Page Time (s)
+    ws.cell(row=6, column=1, value="Avg Page Time (s)")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=6, column=i, value=round(run.avg_page_time_s, 2))
+    ws.cell(
+        row=6,
+        column=len(runs) + 2,
+        value=round(
+            sum(run.total_time_s for run, _, _ in runs)
+            / sum(run.num_pages for run, _, _ in runs)
+            if sum(run.num_pages for run, _, _ in runs)
+            else 0,
+            2,
+        ),
+    )
+
+    # 6. OCR Init Time (s)
+    ws.cell(row=7, column=1, value="OCR Init Time (s)")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        init = next((p.ocr_init_time_s for p in pages if p.ocr_init_time_s > 0), 0)
+        ws.cell(row=7, column=i, value=round(init, 2))
+    ws.cell(
+        row=7,
+        column=len(runs) + 2,
+        value=round(
+            max(
+                next((p.ocr_init_time_s for p in pages if p.ocr_init_time_s > 0), 0)
+                for _, pages, _ in runs
+            ),
+            2,
+        ),
+    )
+
+    # 7. OCR Inference Time (s)
+    ws.cell(row=8, column=1, value="OCR Inference Time (s)")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(
+            row=8, column=i, value=round(sum(p.ocr_inference_time_s for p in pages), 2)
+        )
+    ws.cell(
+        row=8,
+        column=len(runs) + 2,
+        value=round(
+            sum(sum(p.ocr_inference_time_s for p in pages) for _, pages, _ in runs), 2
+        ),
+    )
+
+    # 8. Layout Detection Time (s)
+    ws.cell(row=9, column=1, value="Layout Detection Time (s)")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(
+            row=9,
+            column=i,
+            value=round(sum(p.layout_detection_time_s for p in pages), 2),
+        )
+    ws.cell(
+        row=9,
+        column=len(runs) + 2,
+        value=round(
+            sum(sum(p.layout_detection_time_s for p in pages) for _, pages, _ in runs),
+            2,
+        ),
+    )
+
+    # 9. Extraction Time (s)
+    ws.cell(row=10, column=1, value="Extraction Time (s)")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(
+            row=10, column=i, value=round(sum(p.extraction_time_s for p in pages), 2)
+        )
+    ws.cell(
+        row=10,
+        column=len(runs) + 2,
+        value=round(
+            sum(sum(p.extraction_time_s for p in pages) for _, pages, _ in runs), 2
+        ),
+    )
+
+    # 10. Validation Time (s)
+    ws.cell(row=11, column=1, value="Validation Time (s)")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(
+            row=11, column=i, value=round(sum(p.validation_time_s for p in pages), 2)
+        )
+    ws.cell(
+        row=11,
+        column=len(runs) + 2,
+        value=round(
+            sum(sum(p.validation_time_s for p in pages) for _, pages, _ in runs), 2
+        ),
+    )
+
+    # 11. Total OCR Boxes
+    ws.cell(row=12, column=1, value="Total OCR Boxes Detected")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(row=12, column=i, value=sum(p.total_boxes_detected for p in pages))
+    ws.cell(
+        row=12,
+        column=len(runs) + 2,
+        value=sum(sum(p.total_boxes_detected for p in pages) for _, pages, _ in runs),
+    )
+
+    # 12. VLM Fallbacks
+    ws.cell(row=13, column=1, value="VLM Fallbacks Triggered")
+    for i, (_, pages, _) in enumerate(runs, 2):
+        ws.cell(row=13, column=i, value=sum(p.vlm_fallbacks for p in pages))
+    ws.cell(
+        row=13,
+        column=len(runs) + 2,
+        value=sum(sum(p.vlm_fallbacks for p in pages) for _, pages, _ in runs),
+    )
+
+    # 13. Rows Extracted
+    ws.cell(row=14, column=1, value="Rows Extracted")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=14, column=i, value=run.total_rows_extracted)
+    ws.cell(
+        row=14,
+        column=len(runs) + 2,
+        value=sum(run.total_rows_extracted for run, _, _ in runs),
+    )
+
+    # 14. Accepted
+    ws.cell(row=15, column=1, value="Accepted")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=15, column=i, value=run.accepted_count)
+    ws.cell(
+        row=15,
+        column=len(runs) + 2,
+        value=sum(run.accepted_count for run, _, _ in runs),
+    )
+
+    # 15. Flagged
+    ws.cell(row=16, column=1, value="Flagged")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=16, column=i, value=run.flagged_count)
+    ws.cell(
+        row=16, column=len(runs) + 2, value=sum(run.flagged_count for run, _, _ in runs)
+    )
+
+    # 16. Failed
+    ws.cell(row=17, column=1, value="Failed")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=17, column=i, value=run.failed_count)
+    ws.cell(
+        row=17, column=len(runs) + 2, value=sum(run.failed_count for run, _, _ in runs)
+    )
+
+    # 17. Acceptance Rate
+    ws.cell(row=18, column=1, value="Acceptance Rate")
+    for i, (run, _, _) in enumerate(runs, 2):
+        rate = run.accepted_count / max(run.total_rows_extracted, 1) * 100
+        ws.cell(row=18, column=i, value=f"{rate:.1f}%")
+    total_acc = sum(run.accepted_count for run, _, _ in runs)
+    total_rows = sum(run.total_rows_extracted for run, _, _ in runs)
+    ws.cell(
+        row=18,
+        column=len(runs) + 2,
+        value=f"{total_acc / max(total_rows, 1) * 100:.1f}%",
+    )
+
+    # 18. Mean Confidence
+    ws.cell(row=19, column=1, value="Mean Confidence")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=19, column=i, value=round(run.mean_overall_confidence, 4))
+    ws.cell(
+        row=19,
+        column=len(runs) + 2,
+        value=round(
+            sum(run.mean_overall_confidence for run, _, _ in runs) / len(runs), 4
+        ),
+    )
+
+    # 19. Min Confidence
+    ws.cell(row=20, column=1, value="Min Confidence")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=20, column=i, value=round(run.min_overall_confidence, 4))
+    ws.cell(
+        row=20,
+        column=len(runs) + 2,
+        value=round(min(run.min_overall_confidence for run, _, _ in runs), 4),
+    )
+
+    # 20. Max Confidence
+    ws.cell(row=21, column=1, value="Max Confidence")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=21, column=i, value=round(run.max_overall_confidence, 4))
+    ws.cell(
+        row=21,
+        column=len(runs) + 2,
+        value=round(max(run.max_overall_confidence for run, _, _ in runs), 4),
+    )
+
+    # 21. Mean CER
+    ws.cell(row=22, column=1, value="Mean Character Error Rate")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=22, column=i, value=round(run.mean_cer, 4))
+    ws.cell(
+        row=22,
+        column=len(runs) + 2,
+        value=round(sum(run.mean_cer for run, _, _ in runs) / len(runs), 4),
+    )
+
+    # 22. Hours Mismatch Rate
+    ws.cell(row=23, column=1, value="Hours Mismatch Rate")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=23, column=i, value=f"{run.hours_mismatch_rate * 100:.1f}%")
+    # Weighted average
+    total_with_hours = 0
+    total_mismatches = 0
+    for _, _, rows in runs:
+        rows_with_hours = [
+            r for r in rows if r.calculated_hours is not None and r.total_hours_text
+        ]
+        total_with_hours += len(rows_with_hours)
+        total_mismatches += sum(
+            1 for r in rows_with_hours if "hours_mismatch" in r.validation_errors
+        )
+    ws.cell(
+        row=23,
+        column=len(runs) + 2,
+        value=f"{total_mismatches / max(total_with_hours, 1) * 100:.1f}%",
+    )
+
+    # 23. Field Missing Rate
+    ws.cell(row=24, column=1, value="Field Missing Rate")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=24, column=i, value=f"{run.field_missing_rate * 100:.1f}%")
+    total_missing = sum(
+        sum(
+            1
+            for r in rows
+            if not r.parsed_date or not r.parsed_time_in or not r.parsed_time_out
+        )
+        for _, _, rows in runs
+    )
+    total_rows_all = sum(len(rows) for _, _, rows in runs)
+    ws.cell(
+        row=24,
+        column=len(runs) + 2,
+        value=f"{total_missing / max(total_rows_all, 1) * 100:.1f}%",
+    )
+
+    # Style the metric column
+    metric_font = Font(name="Calibri", bold=True, size=11)
+    for row_idx in range(2, 25):
+        ws.cell(row=row_idx, column=1).font = metric_font
+
+    # Auto-fit
+    ws.column_dimensions["A"].width = 35
+    for col_idx in range(2, len(headers) + 1):
+        max_len = len(str(headers[col_idx - 1]))
+        for row_idx in range(2, 25):
+            val = ws.cell(row=row_idx, column=col_idx).value
+            if val:
+                max_len = max(max_len, len(str(val)))
+        from openpyxl.utils import get_column_letter
+
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 45)

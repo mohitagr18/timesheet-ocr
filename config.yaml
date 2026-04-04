@@ -1,4 +1,4 @@
-extraction_mode: "ppocr_grid"   # 'ppocr_grid' (standard forms) or 'vlm_full_page' (complex matrix forms)
+extraction_mode: "vlm_full_page"   # 'ppocr_grid' (standard forms) or 'vlm_full_page' (complex matrix forms)
 
 # --- Input / Output ---
 paths:
@@ -56,3 +56,13 @@ validation:
 export:
   formats: ["xlsx"]
   excel_sheet_name: "Timesheet Data"
+  include_review_json: true
+  include_report_json: true
+
+# --- Debug / Visualization ---
+debug:
+  visualize_ocr: true
+  output_dir: "output/debug"
+  anonymize_phi: true
+  signature_zone_fraction: 0.30
+  signature_ocr_threshold: 100
