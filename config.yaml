@@ -1,4 +1,4 @@
-extraction_mode: "vlm_full_page"   # 'ppocr_grid' (standard forms) or 'vlm_full_page' (complex matrix forms)
+extraction_mode: "ppocr_grid"   # 'ppocr_grid' (standard forms) or 'vlm_full_page' (complex matrix forms)
 
 # --- Input / Output ---
 paths:
@@ -8,16 +8,16 @@ paths:
 
 # --- OCR confidence thresholds ---
 confidence:
-  accept_threshold: 0.90
+  accept_t_grid extraction modehreshold: 0.90
   fallback_threshold: 0.75
 
 # --- PP-OCRv5 settings ---
 ppocr:
   lang: "en"
-  use_angle_cls: false       # SET TO FALSE: Forces horizontal line reading
-  use_gpu: false
-  det_db_thresh: 0.45
-  rec_batch_num: 4
+  use_textline_orientation: false
+  device: "cpu"
+  text_det_thresh: 0.45
+  text_rec_batch_size: 4
 
 # --- Qwen2.5-VL via Ollama ---
 ollama:
@@ -40,16 +40,8 @@ layout:
   transposed: true
   
   header_zone: [0.0, 0.0, 1.0, 0.16]
-  table_zone: [0.24, 0.16, 1.0, 0.95]  # X-start=24% skips label column; Y covers TIME IN (88%) + HOURS (93%)
-  footer_zone: [0.0, 0.95, 1.0, 1.0]
-
-  # MEASURED from debug_layout.py on C.Ferguson & K.Drewry PDFs
-  columns:
-    date: [0.18, 0.21]        # Y=19.5-19.8% — "DATE (Month/Day/Year)" row
-    time_in: [0.865, 0.895]   # Y=87.6-88.1% — "TIME IN" row
-    time_out: [0.895, 0.915]  # Y=89.8-90.3% — "TIME OUT" row
-    total_hours: [0.915, 0.94]# Y=92.0-92.3% — "NUMBER OF HOURS" row
-    notes: [0.94, 1.0]        # Below hours row
+  table_zone: [0.24, 0.16, 1.0, 0.98]
+  footer_zone: [0.0, 0.98, 1.0, 1.0]
 
 # --- Validation rules ---
 validation:
@@ -57,6 +49,8 @@ validation:
   hours_mismatch_tolerance: 0.25
   allow_future_dates: false
   max_days_in_past: 365
+  week_start_day: 2   # 0=Mon, 1=Tue, 2=Wed, ..., 6=Sun
+  week_length: 7
 
 # --- Export settings ---
 export:

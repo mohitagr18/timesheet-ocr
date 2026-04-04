@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 # ── Config sub-models ───────────────────────────────────────────────
 
+
 class PathsConfig(BaseModel):
     input_dir: str = "input"
     output_dir: str = "output"
@@ -25,10 +26,10 @@ class ConfidenceConfig(BaseModel):
 
 class PpocrConfig(BaseModel):
     lang: str = "en"
-    use_angle_cls: bool = True
-    use_gpu: bool = False
-    det_db_thresh: float = 0.3
-    rec_batch_num: int = 6
+    use_textline_orientation: bool = True
+    device: str = "cpu"
+    text_det_thresh: float = 0.3
+    text_rec_batch_size: int = 6
 
 
 class OllamaConfig(BaseModel):
@@ -47,20 +48,11 @@ class PreprocessingConfig(BaseModel):
     adaptive_c: int = 2
 
 
-class ColumnBounds(BaseModel):
-    date: list[float] = [0.0, 0.20]
-    time_in: list[float] = [0.20, 0.40]
-    time_out: list[float] = [0.40, 0.60]
-    total_hours: list[float] = [0.60, 0.75]
-    notes: list[float] = [0.75, 1.0]
-
-
 class LayoutConfig(BaseModel):
     transposed: bool = False
     header_zone: list[float] = [0.0, 0.0, 1.0, 0.16]
-    table_zone: list[float] = [0.0, 0.16, 1.0, 0.94]
-    footer_zone: list[float] = [0.0, 0.94, 1.0, 1.0]
-    columns: ColumnBounds = Field(default_factory=ColumnBounds)
+    table_zone: list[float] = [0.0, 0.16, 1.0, 0.98]
+    footer_zone: list[float] = [0.0, 0.98, 1.0, 1.0]
 
 
 class ValidationConfig(BaseModel):
@@ -68,6 +60,8 @@ class ValidationConfig(BaseModel):
     hours_mismatch_tolerance: float = 0.25
     allow_future_dates: bool = False
     max_days_in_past: int = 365
+    week_start_day: int = 2  # 0=Mon, 1=Tue, 2=Wed, ..., 6=Sun
+    week_length: int = 7
 
 
 class ExportConfig(BaseModel):
@@ -76,6 +70,7 @@ class ExportConfig(BaseModel):
 
 
 # ── Top-level config ────────────────────────────────────────────────
+
 
 class AppConfig(BaseModel):
     extraction_mode: str = "vlm_full_page"  # "ppocr_grid" or "vlm_full_page"
@@ -154,7 +149,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
     for key, value in os.environ.items():
         if not key.startswith(prefix):
             continue
-        parts = key[len(prefix):].lower().split("_", 1)
+        parts = key[len(prefix) :].lower().split("_", 1)
         if len(parts) != 2:
             continue
         section, field = parts

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import cv2
 import numpy as np
 
 if TYPE_CHECKING:
@@ -83,14 +84,14 @@ class OcrEngine:
         from paddleocr import PaddleOCR
 
         cfg = self.config.ppocr
-        logger.info("Initializing PP-OCRv5 engine...")
+        logger.info("Initializing PP-OCRv5 engine (mobile models)...")
         self._ocr = PaddleOCR(
-            lang=cfg.lang,
-            use_angle_cls=cfg.use_angle_cls,
-            use_gpu=cfg.use_gpu,
-            det_db_thresh=cfg.det_db_thresh,
-            rec_batch_num=cfg.rec_batch_num,
-            show_log=False,
+            text_detection_model_name="PP-OCRv5_mobile_det",
+            text_recognition_model_name="PP-OCRv5_mobile_rec",
+            use_textline_orientation=cfg.use_textline_orientation,
+            device=cfg.device,
+            text_det_thresh=cfg.text_det_thresh,
+            text_recognition_batch_size=cfg.text_rec_batch_size,
         )
         self._initialized = True
         logger.info("PP-OCRv5 engine ready")
@@ -99,20 +100,45 @@ class OcrEngine:
         """Run OCR on a full image. Returns structured OcrResult."""
         self._ensure_initialized()
 
-        result = self._ocr.ocr(image, cls=self.config.ppocr.use_angle_cls)
+        # PaddleOCR v3.4.0 requires 3-channel images
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        orig_h, orig_w = image.shape[:2]
+        result = self._ocr.ocr(image)
 
         boxes = []
-        if result and result[0]:
-            for line in result[0]:
-                bbox_points = line[0]
-                text = line[1][0]
-                confidence = float(line[1][1])
-                boxes.append(OcrBox(text=text, confidence=confidence, bbox=bbox_points))
+        if result:
+            for page in result:
+                rec_texts = page.get("rec_texts", [])
+                rec_scores = page.get("rec_scores", [])
+                rec_polys = page.get("rec_polys", [])
+
+                # Scale coordinates back to original image space if PaddleOCR
+                # internally resized the image. The output_img shape tells us
+                # the space the coordinates are in.
+                output_shape = page.get("doc_preprocessor_res", {}).get(
+                    "output_img", None
+                )
+                if output_shape is not None:
+                    out_h, out_w = output_shape.shape[:2]
+                    sx = orig_w / out_w if out_w != orig_w else 1.0
+                    sy = orig_h / out_h if out_h != orig_h else 1.0
+                else:
+                    sx, sy = 1.0, 1.0
+
+                for text, score, poly in zip(rec_texts, rec_scores, rec_polys):
+                    bbox_points = [[float(p[0]) * sx, float(p[1]) * sy] for p in poly]
+                    boxes.append(
+                        OcrBox(text=text, confidence=float(score), bbox=bbox_points)
+                    )
 
         logger.info(f"OCR detected {len(boxes)} text boxes")
         return OcrResult(boxes=boxes, raw_output=result)
 
-    def run_on_crop(self, image: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> OcrResult:
+    def run_on_crop(
+        self, image: np.ndarray, x1: int, y1: int, x2: int, y2: int
+    ) -> OcrResult:
         """Run OCR on a cropped region of the image.
 
         Coordinates are absolute pixel positions in the original image.

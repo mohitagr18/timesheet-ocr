@@ -22,6 +22,7 @@ class OcrSource(str, Enum):
 
     PPOCR = "ppocr"
     VLM = "vlm"
+    GENERATED = "generated"
     MANUAL = "manual"
 
 
@@ -69,7 +70,11 @@ class TimesheetRow(BaseModel):
     @property
     def min_confidence(self) -> float:
         """Minimum confidence across all required cells."""
-        scores = [self.date_confidence, self.time_in_confidence, self.time_out_confidence]
+        scores = [
+            self.date_confidence,
+            self.time_in_confidence,
+            self.time_out_confidence,
+        ]
         return min(scores) if scores else 0.0
 
     def calculated_hours(self) -> Optional[float]:
@@ -83,6 +88,7 @@ class TimesheetRow(BaseModel):
         # Overnight shift: time_out is before time_in → add 24 hours
         if dt_out <= dt_in:
             from datetime import timedelta
+
             dt_out += timedelta(days=1)
             self.is_overnight = True
 

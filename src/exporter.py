@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, date, time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,37 +60,92 @@ def export_results(result: ExtractionResult, config: AppConfig) -> list[Path]:
     return created_files
 
 
+def _sorted_rows(result: ExtractionResult):
+    """Flatten and sort all rows by employee (alpha) → date (asc) → time_in (asc)."""
+    all_rows = []
+    for record in result.records:
+        for row in record.rows:
+            all_rows.append((record, row))
+
+    all_rows.sort(
+        key=lambda x: (
+            x[0].employee_name.lower(),
+            x[1].date_parsed or date.min,
+            x[1].time_in_parsed or time.min,
+        )
+    )
+
+    return all_rows
+
+
 def _export_csv(result: ExtractionResult, path: Path) -> None:
     """Export results as CSV (one row per timesheet row)."""
     fieldnames = [
-        "source_file", "page", "row_index", "employee_name", "patient_name",
-        "date", "time_in", "time_out", "total_hours", "calculated_hours",
-        "is_overnight", "is_over_24h_limit", "notes", "confidence", "status",
+        "source_file",
+        "page",
+        "row_index",
+        "employee_name",
+        "patient_name",
+        "date",
+        "date_source",
+        "time_in",
+        "time_in_source",
+        "time_out",
+        "time_out_source",
+        "total_hours",
+        "hours_source",
+        "calculated_hours",
+        "is_overnight",
+        "is_over_24h_limit",
+        "notes",
+        "confidence",
+        "status",
     ]
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for record in result.records:
-            for row in record.rows:
-                writer.writerow({
+        for record, row in _sorted_rows(result):
+            writer.writerow(
+                {
                     "source_file": record.source_file,
                     "page": record.page_number,
                     "row_index": row.row_index,
                     "employee_name": record.employee_name,
                     "patient_name": record.patient_name,
                     "date": str(row.date_parsed) if row.date_parsed else row.date_text,
-                    "time_in": row.time_in_parsed.strftime("%H:%M") if row.time_in_parsed else row.time_in_text,
-                    "time_out": row.time_out_parsed.strftime("%H:%M") if row.time_out_parsed else row.time_out_text,
-                    "total_hours": row.total_hours_parsed if row.total_hours_parsed else row.total_hours_text,
+                    "date_source": row.date_source.value
+                    if hasattr(row, "date_source")
+                    else "",
+                    "time_in": row.time_in_parsed.strftime("%H:%M")
+                    if row.time_in_parsed
+                    else row.time_in_text,
+                    "time_in_source": row.time_in_source.value
+                    if hasattr(row, "time_in_source")
+                    else "",
+                    "time_out": row.time_out_parsed.strftime("%H:%M")
+                    if row.time_out_parsed
+                    else row.time_out_text,
+                    "time_out_source": row.time_out_source.value
+                    if hasattr(row, "time_out_source")
+                    else "",
+                    "total_hours": row.total_hours_parsed
+                    if row.total_hours_parsed
+                    else row.total_hours_text,
+                    "hours_source": row.hours_source.value
+                    if hasattr(row, "hours_source")
+                    else "",
                     "calculated_hours": row.calculated_hours() or "",
                     "is_overnight": "Yes" if row.is_overnight else "",
-                    "is_over_24h_limit": "Yes" if getattr(row, "is_over_24h_limit", False) else "",
+                    "is_over_24h_limit": "Yes"
+                    if getattr(row, "is_over_24h_limit", False)
+                    else "",
                     "notes": row.notes,
                     "confidence": f"{row.min_confidence:.2f}",
                     "status": row.status.value,
-                })
+                }
+            )
 
     logger.info(f"CSV exported: {path}")
 
@@ -127,12 +182,20 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
 
     # ── Styles ─────────────────────────────────────────────────────
     header_font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
-    header_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+    header_fill = PatternFill(
+        start_color="2F5496", end_color="2F5496", fill_type="solid"
+    )
     header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    accepted_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-    flagged_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
-    failed_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    accepted_fill = PatternFill(
+        start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"
+    )
+    flagged_fill = PatternFill(
+        start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"
+    )
+    failed_fill = PatternFill(
+        start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"
+    )
 
     thin_border = Border(
         left=Side(style="thin"),
@@ -143,9 +206,26 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
 
     # ── Headers ────────────────────────────────────────────────────
     headers = [
-        "Source File", "Page", "Row #", "Employee Name", "Patient Name",
-        "Date", "Time In", "Time Out", "Total Hours", "Calculated Hours",
-        "Overnight", "Over 24h Limit", "Notes", "Confidence", "Status", "Issues",
+        "Source File",
+        "Page",
+        "Row #",
+        "Employee Name",
+        "Patient Name",
+        "Date",
+        "Date Source",
+        "Time In",
+        "Time In Source",
+        "Time Out",
+        "Time Out Source",
+        "Total Hours",
+        "Hours Source",
+        "Calculated Hours",
+        "Overnight",
+        "Over 24h Limit",
+        "Notes",
+        "Confidence",
+        "Status",
+        "Issues",
     ]
 
     if headers_needed:
@@ -157,42 +237,51 @@ def _export_excel(result: ExtractionResult, path: Path, config: AppConfig) -> No
             cell.border = thin_border
 
     # ── Data rows ──────────────────────────────────────────────────
-    for record in result.records:
-        for row in record.rows:
-            values = [
-                record.source_file,
-                record.page_number,
-                row.row_index,
-                record.employee_name,
-                record.patient_name,
-                str(row.date_parsed) if row.date_parsed else row.date_text,
-                row.time_in_parsed.strftime("%H:%M") if row.time_in_parsed else row.time_in_text,
-                row.time_out_parsed.strftime("%H:%M") if row.time_out_parsed else row.time_out_text,
-                row.total_hours_parsed if row.total_hours_parsed is not None else row.total_hours_text,
-                row.calculated_hours() or "",
-                "Yes" if row.is_overnight else "",
-                "Yes" if getattr(row, "is_over_24h_limit", False) else "",
-                row.notes,
-                round(row.min_confidence, 2),
-                row.status.value,
-                "; ".join(row.validation_errors) if row.validation_errors else "",
-            ]
+    for record, row in _sorted_rows(result):
+        values = [
+            record.source_file,
+            record.page_number,
+            row.row_index,
+            record.employee_name,
+            record.patient_name,
+            str(row.date_parsed) if row.date_parsed else row.date_text,
+            row.date_source.value if hasattr(row, "date_source") else "",
+            row.time_in_parsed.strftime("%H:%M")
+            if row.time_in_parsed
+            else row.time_in_text,
+            row.time_in_source.value if hasattr(row, "time_in_source") else "",
+            row.time_out_parsed.strftime("%H:%M")
+            if row.time_out_parsed
+            else row.time_out_text,
+            row.time_out_source.value if hasattr(row, "time_out_source") else "",
+            row.total_hours_parsed
+            if row.total_hours_parsed is not None
+            else row.total_hours_text,
+            row.hours_source.value if hasattr(row, "hours_source") else "",
+            row.calculated_hours() or "",
+            "Yes" if row.is_overnight else "",
+            "Yes" if getattr(row, "is_over_24h_limit", False) else "",
+            row.notes,
+            round(row.min_confidence, 2),
+            row.status.value,
+            "; ".join(row.validation_errors) if row.validation_errors else "",
+        ]
 
-            # Choose row fill based on status
-            if row.status == RowStatus.ACCEPTED:
-                row_fill = accepted_fill
-            elif row.status == RowStatus.FLAGGED:
-                row_fill = flagged_fill
-            else:
-                row_fill = failed_fill
+        # Choose row fill based on status
+        if row.status == RowStatus.ACCEPTED:
+            row_fill = accepted_fill
+        elif row.status == RowStatus.FLAGGED:
+            row_fill = flagged_fill
+        else:
+            row_fill = failed_fill
 
-            for col_idx, value in enumerate(values, 1):
-                cell = ws.cell(row=data_row, column=col_idx, value=value)
-                cell.fill = row_fill
-                cell.border = thin_border
-                cell.alignment = Alignment(vertical="center")
+        for col_idx, value in enumerate(values, 1):
+            cell = ws.cell(row=data_row, column=col_idx, value=value)
+            cell.fill = row_fill
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
 
-            data_row += 1
+        data_row += 1
 
     # ── Auto-fit column widths ─────────────────────────────────────
     for col_idx in range(1, len(headers) + 1):
@@ -237,12 +326,14 @@ def _export_report(result: ExtractionResult, path: Path) -> None:
     for record in result.records:
         for row in record.rows:
             for error in row.validation_errors:
-                all_warnings.append({
-                    "page": record.page_number,
-                    "row": row.row_index,
-                    "rule": error,
-                    "detail": f"Row {row.row_index}: {error}",
-                })
+                all_warnings.append(
+                    {
+                        "page": record.page_number,
+                        "row": row.row_index,
+                        "rule": error,
+                        "detail": f"Row {row.row_index}: {error}",
+                    }
+                )
 
     data = {
         "source_file": result.source_file,

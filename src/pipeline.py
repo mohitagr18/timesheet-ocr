@@ -10,7 +10,17 @@ from typing import TYPE_CHECKING
 import re
 import numpy as np
 
-from .confidence import Route, boxes_in_zone, route_by_confidence, should_fallback_entire_row
+from .benchmark import (
+    BenchmarkCollector,
+    PageMetrics,
+    RowMetrics,
+)
+from .confidence import (
+    Route,
+    boxes_in_zone,
+    route_by_confidence,
+    should_fallback_entire_row,
+)
 from .exporter import export_results
 from .layout import detect_layout
 from .models import (
@@ -21,7 +31,14 @@ from .models import (
     TimesheetRow,
 )
 from .ocr_engine import OcrEngine
-from .parser import clean_name, parse_date, parse_hours, parse_time
+from .parser import (
+    clean_name,
+    extract_expected_year,
+    extract_week_dates,
+    parse_date,
+    parse_hours,
+    parse_time,
+)
 from .preprocessing import load_image, pdf_to_images, preprocess_image
 from .review_queue import build_review_queue
 from .validation import validate_record
@@ -43,6 +60,8 @@ class Pipeline:
         self.config = config
         self.ocr_engine = OcrEngine(config)
         self.vlm = VlmFallback(config)
+        self.benchmark = BenchmarkCollector()
+        self._ocr_init_time = 0.0
 
     def process_file(self, file_path: str | Path) -> ExtractionResult:
         """Process a single file (PDF or image) through the full pipeline."""
@@ -53,6 +72,20 @@ class Pipeline:
         logger.info(f"Processing: {file_path.name}")
         logger.info(f"{'=' * 60}")
 
+        # Initialize benchmark
+        file_size_kb = file_path.stat().st_size / 1024 if file_path.exists() else 0
+        model_type = "PP-OCRv5_mobile"
+        device = self.config.ppocr.device
+        image_dpi = self.config.preprocessing.target_dpi
+        self.benchmark.start_run(
+            source_file=file_path.name,
+            model_type=model_type,
+            device=device,
+            image_dpi=image_dpi,
+            file_size_kb=file_size_kb,
+        )
+        self._ocr_init_time = 0.0
+
         # 1. Load file → list of images (one per page)
         images = self._load_file(file_path)
 
@@ -60,19 +93,36 @@ class Pipeline:
         records: list[TimesheetRecord] = []
         for page_idx, image in enumerate(images):
             logger.info(f"\n--- Page {page_idx + 1}/{len(images)} ---")
-            
+
             page_start_time = time_module.time()
-            record = self._process_page(image, file_path.name, page_idx + 1)
+            record, page_bench = self._process_page(image, file_path.name, page_idx + 1)
             page_elapsed = time_module.time() - page_start_time
-            
-            logger.info(f"Page {page_idx + 1} processing complete in {page_elapsed:.1f}s")
+            page_bench.page_time_s = page_elapsed
+            page_bench.image_width = image.shape[1]
+            page_bench.image_height = image.shape[0]
+            self.benchmark.add_page(page_bench)
+
+            logger.info(
+                f"Page {page_idx + 1} processing complete in {page_elapsed:.1f}s"
+            )
             records.append(record)
 
         # 2.5 Aggregate Document-Level Metadata
         # (E.g. Page 1 has shifts/patient name, Page 2 has the employee signature)
-        best_emp = max(records, key=lambda r: (r.employee_name_confidence, len(r.employee_name))) if records else None
-        best_pat = max(records, key=lambda r: (r.patient_name_confidence, len(r.patient_name))) if records else None
-        
+        best_emp = (
+            max(
+                records,
+                key=lambda r: (r.employee_name_confidence, len(r.employee_name)),
+            )
+            if records
+            else None
+        )
+        best_pat = (
+            max(records, key=lambda r: (r.patient_name_confidence, len(r.patient_name)))
+            if records
+            else None
+        )
+
         for r in records:
             if not r.employee_name and best_emp and best_emp.employee_name:
                 r.employee_name = best_emp.employee_name
@@ -80,6 +130,11 @@ class Pipeline:
             if not r.patient_name and best_pat and best_pat.patient_name:
                 r.patient_name = best_pat.patient_name
                 r.patient_name_confidence = best_pat.patient_name_confidence
+
+        # Collect row-level benchmark metrics
+        for record in records:
+            for row in record.rows:
+                self._collect_row_metrics(row, record)
 
         # 3. Build result
         elapsed = time_module.time() - start_time
@@ -96,18 +151,32 @@ class Pipeline:
         # 5. Export
         output_files = export_results(result, self.config)
 
+        # 5.5 Export benchmark
+        self.benchmark.finalize(elapsed)
+        self.benchmark.run.image_dimensions = (
+            f"{self.benchmark.pages[0].image_width}x{self.benchmark.pages[0].image_height}"
+            if self.benchmark.pages
+            else ""
+        )
+        bench_file = self.benchmark.export(self.config.output_path)
+        output_files.append(bench_file)
+
         # 6. Summary
         logger.info(f"\n{'=' * 60}")
         logger.info(f"DONE: {file_path.name}")
         logger.info(f"  Pages: {result.total_pages}")
-        logger.info(f"  Rows:  {result.total_rows} (accepted={result.accepted_count}, flagged={result.flagged_count}, failed={result.failed_count})")
+        logger.info(
+            f"  Rows:  {result.total_rows} (accepted={result.accepted_count}, flagged={result.flagged_count}, failed={result.failed_count})"
+        )
         logger.info(f"  Time:  {elapsed:.1f}s")
         logger.info(f"  Files: {[f.name for f in output_files]}")
         logger.info(f"{'=' * 60}")
 
         return result
 
-    def process_directory(self, input_dir: str | Path | None = None) -> list[ExtractionResult]:
+    def process_directory(
+        self, input_dir: str | Path | None = None
+    ) -> list[ExtractionResult]:
         """Process all supported files in a directory."""
         if input_dir is None:
             input_dir = self.config.input_path
@@ -121,7 +190,8 @@ class Pipeline:
         # Find all supported files
         supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
         files = sorted(
-            f for f in input_dir.iterdir()
+            f
+            for f in input_dir.iterdir()
             if f.suffix.lower() in supported and not f.name.startswith(".")
         )
 
@@ -135,29 +205,36 @@ class Pipeline:
         if xlsx_path.exists():
             try:
                 from openpyxl import load_workbook
+
                 wb = load_workbook(xlsx_path, read_only=True)
                 if self.config.export.excel_sheet_name in wb.sheetnames:
                     ws = wb[self.config.export.excel_sheet_name]
                 else:
                     ws = wb.active
-                
+
                 # Source File is column A (1-indexed)
                 for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
                     if row[0]:
                         processed_files.add(str(row[0]))
                 if processed_files:
-                    logger.info(f"Found {len(processed_files)} previously processed file(s) in Excel.")
+                    logger.info(
+                        f"Found {len(processed_files)} previously processed file(s) in Excel."
+                    )
             except Exception as e:
-                logger.warning(f"Could not read existing Excel to find processed files: {e}")
+                logger.warning(
+                    f"Could not read existing Excel to find processed files: {e}"
+                )
 
         logger.info(f"Found {len(files)} file(s) in input directory")
 
         results = []
         for file_path in files:
             if file_path.name in processed_files:
-                logger.info(f"Skipping {file_path.name}: already processed and in Excel.")
+                logger.info(
+                    f"Skipping {file_path.name}: already processed and in Excel."
+                )
                 continue
-                
+
             try:
                 result = self.process_file(file_path)
                 results.append(result)
@@ -173,33 +250,50 @@ class Pipeline:
         else:
             return [load_image(file_path)]
 
-    def _process_page(self, image: np.ndarray, source_file: str, page_number: int) -> TimesheetRecord:
+    def _process_page(
+        self, image: np.ndarray, source_file: str, page_number: int
+    ) -> tuple[TimesheetRecord, PageMetrics]:
         """Process a single page image through OCR + validation."""
+        page_metrics = PageMetrics(source_file=source_file, page_number=page_number)
+
+        preprocess_start = time_module.time()
         preprocessed = preprocess_image(image, self.config)
+        preprocess_time = time_module.time() - preprocess_start
 
         # Extract patient name perfectly from the filename
         # Format: "J.Flemming Timesheets - 012826-020326.pdf" -> "J.Flemming"
         patient_name = source_file.split("Timesheet")[0].strip(" -_")
         patient_conf = 1.0
 
+        # Extract expected year from filename for date parsing
+        expected_year = extract_expected_year(source_file)
+        if expected_year:
+            logger.info(f"Expected year from filename: {expected_year}")
+
         employee_name = ""
         employee_conf = 0.0
         rows = []
 
         if getattr(self.config, "extraction_mode", "ppocr_grid") == "vlm_full_page":
+            vlm_start = time_module.time()
             vlm_results = self.vlm.extract_full_page(image)
-            
-            employee_name = vlm_results.get("rn_lpn_name", "") # RN/LPN mapped to employee
+            vlm_time = time_module.time() - vlm_start
+
+            employee_name = vlm_results.get(
+                "rn_lpn_name", ""
+            )  # RN/LPN mapped to employee
             employee_conf = 0.9 if employee_name else 0.0
-            
+
             valid_row_idx = 0
-            
-            # Anti-Hallucination Hammer: 
+
+            # Anti-Hallucination Hammer:
             # A single week timesheet page legally tops out at 7 shift rows.
             # If Qwen hallucinates massive sequences (27 days) on a blank signature page, drop the page.
             shifts_data = vlm_results.get("shifts", [])
             if len(shifts_data) > 7:
-                logger.warning(f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table.")
+                logger.warning(
+                    f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                )
                 shifts_data = []
 
             for row_data in shifts_data:
@@ -208,38 +302,68 @@ class Pipeline:
                 time_out_text = row_data.get("time_out", "").strip()
                 hours_text = row_data.get("total_hours", "").strip()
                 notes_text = row_data.get("notes", "").strip()
-                
+
                 # Robust Post-Processing: Drop hallucinated empty shifts based on noise definition
                 def is_noise(val: str) -> bool:
-                    return len(re.sub(r'[^a-zA-Z0-9]', '', val)) == 0
+                    return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
 
-                if is_noise(time_in_text) and is_noise(time_out_text) and is_noise(hours_text):
+                if (
+                    is_noise(time_in_text)
+                    and is_noise(time_out_text)
+                    and is_noise(hours_text)
+                ):
                     continue
-                
-                rows.append(TimesheetRow(
-                    row_index=valid_row_idx,
-                    date_text=date_text,
-                    date_parsed=parse_date(date_text),
-                    time_in_text=time_in_text,
-                    time_in_parsed=parse_time(time_in_text),
-                    time_out_text=time_out_text,
-                    time_out_parsed=parse_time(time_out_text),
-                    total_hours_text=hours_text,
-                    total_hours_parsed=parse_hours(hours_text),
-                    notes=notes_text.strip(),
-                    date_confidence=0.9, 
-                    time_in_confidence=0.9,
-                    time_out_confidence=0.9,
-                    hours_confidence=0.9,
-                    date_source=OcrSource.VLM,
-                    time_in_source=OcrSource.VLM,
-                    time_out_source=OcrSource.VLM,
-                    hours_source=OcrSource.VLM,
-                ))
+
+                rows.append(
+                    TimesheetRow(
+                        row_index=valid_row_idx,
+                        date_text=date_text,
+                        date_parsed=parse_date(date_text, expected_year),
+                        time_in_text=time_in_text,
+                        time_in_parsed=parse_time(time_in_text),
+                        time_out_text=time_out_text,
+                        time_out_parsed=parse_time(time_out_text),
+                        total_hours_text=hours_text,
+                        total_hours_parsed=parse_hours(hours_text),
+                        notes=notes_text.strip(),
+                        date_confidence=0.9,
+                        time_in_confidence=0.9,
+                        time_out_confidence=0.9,
+                        hours_confidence=0.9,
+                        date_source=OcrSource.VLM,
+                        time_in_source=OcrSource.VLM,
+                        time_out_source=OcrSource.VLM,
+                        hours_source=OcrSource.VLM,
+                    )
+                )
                 valid_row_idx += 1
         else:
-            layout = detect_layout(image, self.config)
+            ocr_start = time_module.time()
+            if not self.ocr_engine._initialized:
+                init_start = time_module.time()
+                self.ocr_engine._ensure_initialized()
+                self._ocr_init_time = time_module.time() - init_start
+                page_metrics.ocr_init_time_s = self._ocr_init_time
             ocr_result = self.ocr_engine.run(preprocessed)
+            page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
+            page_metrics.total_boxes_detected = len(ocr_result.boxes)
+
+            layout_start = time_module.time()
+            layout = detect_layout(image, self.config, ocr_result.boxes)
+            page_metrics.layout_detection_time_s = time_module.time() - layout_start
+
+            # Generate week dates from filename for transposed layouts
+            generated_dates = None
+            if self.config.layout.transposed:
+                generated_dates = extract_week_dates(
+                    source_file,
+                    self.config.validation.week_start_day,
+                    self.config.validation.week_length,
+                )
+                if generated_dates:
+                    logger.info(
+                        f"Generated week dates: {generated_dates[0]} → {generated_dates[-1]}"
+                    )
 
             header_boxes = boxes_in_zone(
                 ocr_result.boxes,
@@ -250,23 +374,34 @@ class Pipeline:
             )
 
             if header_boxes:
-                sorted_header = sorted(header_boxes, key=lambda b: (b.y_center, b.x_center))
+                sorted_header = sorted(
+                    header_boxes, key=lambda b: (b.y_center, b.x_center)
+                )
                 if sorted_header:
                     employee_name = clean_name(sorted_header[0].text)
                     employee_conf = sorted_header[0].confidence
                 # patient_name is securely handled by filename extraction above!
 
+            extraction_start = time_module.time()
+            empty_rows = 0
             for row_idx, row_zone in enumerate(layout.row_zones):
                 row = self._extract_row(
-                    image=preprocessed,
+                    image=image,
                     preprocessed=preprocessed,
                     all_boxes=ocr_result.boxes,
                     row_zone=row_zone,
                     row_idx=row_idx,
                     layout=layout,
+                    expected_year=expected_year,
+                    generated_dates=generated_dates,
                 )
                 if row is not None:
                     rows.append(row)
+                else:
+                    empty_rows += 1
+            page_metrics.extraction_time_s = time_module.time() - extraction_start
+            page_metrics.rows_extracted = len(rows)
+            page_metrics.empty_rows_skipped = empty_rows
 
         # 6. Build record
         record = TimesheetRecord(
@@ -280,79 +415,60 @@ class Pipeline:
         )
 
         # 7. Validate
+        validation_start = time_module.time()
         validate_record(record, self.config)
+        page_metrics.validation_time_s = time_module.time() - validation_start
 
-        return record
+        return record, page_metrics
 
     def _extract_row(
-        self, image, preprocessed, all_boxes, row_zone, row_idx, layout
+        self,
+        image,
+        preprocessed,
+        all_boxes,
+        row_zone,
+        row_idx,
+        layout,
+        expected_year=None,
+        generated_dates=None,
     ) -> TimesheetRow | None:
         """Extract data from a single table row using OCR boxes + fallback."""
-        columns = self.config.layout.columns
-        w = layout.image_width
         h = layout.image_height
+        w = layout.image_width
 
-        # Map column names to pixel boundaries
+        # Use dynamically detected field bands from layout
+        field_bounds = layout.field_bands
+
+        # For transposed layouts, use spatial matching with generated dates
         if self.config.layout.transposed:
-            field_bounds = {
-                "date": (int(h * columns.date[0]), int(h * columns.date[1])),
-                "time_in": (int(h * columns.time_in[0]), int(h * columns.time_in[1])),
-                "time_out": (int(h * columns.time_out[0]), int(h * columns.time_out[1])),
-                "total_hours": (int(h * columns.total_hours[0]), int(h * columns.total_hours[1])),
-                "notes": (int(h * columns.notes[0]), int(h * columns.notes[1])),
-            }
-        else:
-            field_bounds = {
-                "date": (int(w * columns.date[0]), int(w * columns.date[1])),
-                "time_in": (int(w * columns.time_in[0]), int(w * columns.time_in[1])),
-                "time_out": (int(w * columns.time_out[0]), int(w * columns.time_out[1])),
-                "total_hours": (int(w * columns.total_hours[0]), int(w * columns.total_hours[1])),
-                "notes": (int(w * columns.notes[0]), int(w * columns.notes[1])),
-            }
+            return self._extract_transposed_row(
+                all_boxes=all_boxes,
+                image=image,
+                row_zone=row_zone,
+                row_idx=row_idx,
+                field_bounds=field_bounds,
+                generated_dates=generated_dates,
+                expected_year=expected_year,
+            )
 
+        # Non-transposed layout: use original OCR + fallback approach
         # Find OCR boxes in each column of this row
         cell_data: dict[str, tuple[str, float]] = {}
         cell_confidences: dict[str, float] = {}
 
         for col_name, (start_pix, end_pix) in field_bounds.items():
-            if self.config.layout.transposed:
-                col_boxes = boxes_in_zone(
-                    all_boxes, row_zone.x_start, start_pix, row_zone.x_end, end_pix
-                )
-            else:
-                col_boxes = boxes_in_zone(
-                    all_boxes, start_pix, row_zone.y_start, end_pix, row_zone.y_end
-                )
+            col_boxes = boxes_in_zone(
+                all_boxes, start_pix, row_zone.y_start, end_pix, row_zone.y_end
+            )
 
             if col_boxes:
-                if self.config.layout.transposed:
-                    text = " ".join(b.text for b in sorted(col_boxes, key=lambda b: b.y_center))
-                else:
-                    text = " ".join(b.text for b in sorted(col_boxes, key=lambda b: b.x_center))
+                text = " ".join(
+                    b.text for b in sorted(col_boxes, key=lambda b: b.x_center)
+                )
                 conf = min(b.confidence for b in col_boxes)
             else:
                 text = ""
                 conf = 0.0
-
-            # Per-cell re-OCR for time fields: PaddleOCR often merges adjacent
-            # columns' handwritten times into one text box (e.g. "200pm5:00om 8:00om").
-            # If the cell is empty (box center fell in a neighbor) or suspiciously
-            # long (merged), crop just this cell and re-run OCR on it.
-            _CELL_OCR_FIELDS = {"time_in", "time_out", "total_hours"}
-            if col_name in _CELL_OCR_FIELDS and (text == "" or len(text) > 10):
-                # Use the original color image (not preprocessed) — grayscale
-                # denoising loses color cues that help OCR read handwriting.
-                if self.config.layout.transposed:
-                    cell_crop = image[start_pix:end_pix, row_zone.x_start:row_zone.x_end]
-                else:
-                    cell_crop = image[row_zone.y_start:row_zone.y_end, start_pix:end_pix]
-
-                if cell_crop.size > 0:
-                    cell_result = self.ocr_engine.run(cell_crop)
-                    if cell_result.boxes:
-                        text = cell_result.full_text
-                        conf = min(b.confidence for b in cell_result.boxes)
-                        logger.debug(f"Row {row_idx} {col_name}: per-cell re-OCR → '{text}' (conf={conf:.3f})")
 
             cell_data[col_name] = (text, conf)
             cell_confidences[col_name] = conf
@@ -365,47 +481,148 @@ class Pipeline:
         row_data = dict(cell_data)  # Copy for potential VLM updates
         sources: dict[str, OcrSource] = {k: OcrSource.PPOCR for k in field_bounds}
 
-        # Check if entire row needs VLM fallback
-        if should_fallback_entire_row(cell_confidences, self.config):
-            logger.info(f"Row {row_idx}: sending entire row to VLM fallback")
-            if self.config.layout.transposed:
-                row_crop = image[row_zone.y_start:row_zone.y_end, row_zone.x_start:row_zone.x_end]
-            else:
-                row_crop = image[row_zone.y_start:row_zone.y_end, :]
-                
-            vlm_result = self.vlm.extract_row(row_crop)
-            if vlm_result:
-                for field, value in vlm_result.items():
-                    if value and field in row_data:
-                        row_data[field] = (value, 0.75)
-                        sources[field] = OcrSource.VLM
-        else:
-            # Per-cell fallback for low-confidence cells
-            for col_name, conf in cell_confidences.items():
-                route = route_by_confidence(conf, self.config)
-                if route == Route.FALLBACK:
-                    start_pix, end_pix = field_bounds[col_name]
-                    if self.config.layout.transposed:
-                        cell_crop = image[start_pix:end_pix, row_zone.x_start:row_zone.x_end]
-                    else:
-                        cell_crop = image[row_zone.y_start:row_zone.y_end, start_pix:end_pix]
-                        
-                    vlm_value, vlm_conf = self.vlm.extract_cell_value(cell_crop, col_name)
-                    if vlm_value:
-                        row_data[col_name] = (vlm_value, vlm_conf)
-                        sources[col_name] = OcrSource.VLM
+        # Per-cell fallback for low-confidence cells
+        for col_name, conf in cell_confidences.items():
+            route = route_by_confidence(conf, self.config)
+            if route == Route.FALLBACK:
+                start_pix, end_pix = field_bounds[col_name]
+                cell_crop = image[row_zone.y_start : row_zone.y_end, start_pix:end_pix]
 
-        # Build TimesheetRow with parsed values
-        date_text, date_conf = row_data["date"]
-        time_in_text, time_in_conf = row_data["time_in"]
-        time_out_text, time_out_conf = row_data["time_out"]
-        hours_text, hours_conf = row_data["total_hours"]
-        notes_text, _ = row_data["notes"]
+                vlm_value, vlm_conf = self.vlm.extract_cell_value(
+                    cell_crop, col_name, expected_year
+                )
+                if vlm_value:
+                    row_data[col_name] = (vlm_value, vlm_conf)
+                    sources[col_name] = OcrSource.VLM
+
+        return self._build_timesheet_row(
+            row_idx, row_data, sources, field_bounds, expected_year
+        )
+
+    def _extract_transposed_row(
+        self,
+        all_boxes,
+        image,
+        row_zone,
+        row_idx,
+        field_bounds,
+        generated_dates,
+        expected_year=None,
+    ) -> TimesheetRow | None:
+        """Extract data from a transposed row (column) using spatial matching.
+
+        Strategy:
+        1. DATE: Use generated_dates[row_idx] (source=GENERATED)
+        2. TIME IN/TIME OUT/HOURS: Find OCR boxes whose centers fall within
+           the column × field_band zone. Concatenate text from matching boxes.
+        3. If a cell is empty after spatial matching, fall back to VLM on
+           the cropped cell.
+
+        Note: PaddleOCR often misses handwritten text. When spatial matching
+        returns empty, VLM fallback handles it.
+        """
+        x_left = row_zone.x_start
+        x_right = row_zone.x_end
+
+        # DATE: Use generated date
+        if generated_dates and row_idx < len(generated_dates):
+            gen_date = generated_dates[row_idx]
+            date_text = gen_date.strftime("%m/%d/%Y")
+            date_conf = 1.0
+            date_source = OcrSource.GENERATED
+        else:
+            date_text = ""
+            date_conf = 0.0
+            date_source = OcrSource.PPOCR
+
+        row_data = {"date": (date_text, date_conf)}
+        sources = {"date": date_source}
+
+        for field_name in ["time_in", "time_out", "total_hours"]:
+            y_start, y_end = field_bounds.get(field_name, (0, 0))
+
+            # Find boxes in column × field_band zone
+            cell_boxes = [
+                b
+                for b in all_boxes
+                if x_left <= b.x_center <= x_right
+                and y_start <= b.y_center <= y_end
+                and b.text.strip()
+            ]
+
+            if cell_boxes:
+                # Sort by Y position (top to bottom within the band)
+                cell_boxes.sort(key=lambda b: b.y_center)
+                text = " ".join(b.text for b in cell_boxes)
+                conf = min(b.confidence for b in cell_boxes)
+                source = OcrSource.PPOCR
+                logger.debug(
+                    f"Row {row_idx} {field_name}: PPOCR → '{text}' (conf={conf:.3f})"
+                )
+            else:
+                # VLM fallback on cropped cell
+                cell_crop = image[y_start:y_end, x_left:x_right]
+                if cell_crop.size > 0:
+                    vlm_value, vlm_conf = self.vlm.extract_cell_value(
+                        cell_crop, field_name, expected_year
+                    )
+                    text = vlm_value
+                    conf = vlm_conf
+                    source = OcrSource.VLM
+                    logger.debug(
+                        f"Row {row_idx} {field_name}: VLM → '{text}' (conf={conf:.3f})"
+                    )
+                else:
+                    text = ""
+                    conf = 0.0
+                    source = OcrSource.PPOCR
+
+            row_data[field_name] = (text, conf)
+            sources[field_name] = source
+
+        # Notes: full range band, try OCR first
+        notes_y_start, notes_y_end = field_bounds.get("notes", (0, 0))
+        notes_boxes = [
+            b
+            for b in all_boxes
+            if x_left <= b.x_center <= x_right
+            and notes_y_start <= b.y_center <= notes_y_end
+            and b.text.strip()
+        ]
+        if notes_boxes:
+            notes_boxes.sort(key=lambda b: b.y_center)
+            notes_text = " ".join(b.text for b in notes_boxes)
+        else:
+            notes_text = ""
+
+        row_data["notes"] = (notes_text, 0.0)
+        sources["notes"] = OcrSource.PPOCR
+
+        # Skip if no meaningful content
+        if all(
+            not row_data.get(k, ("", ""))[0].strip()
+            for k in ["time_in", "time_out", "total_hours"]
+        ):
+            return None
+
+        return self._build_timesheet_row(
+            row_idx, row_data, sources, field_bounds, expected_year
+        )
+
+    def _build_timesheet_row(
+        self, row_idx, row_data, sources, field_bounds, expected_year=None
+    ) -> TimesheetRow:
+        """Build a TimesheetRow from extracted data."""
+        date_text, date_conf = row_data.get("date", ("", 0.0))
+        time_in_text, time_in_conf = row_data.get("time_in", ("", 0.0))
+        time_out_text, time_out_conf = row_data.get("time_out", ("", 0.0))
+        hours_text, hours_conf = row_data.get("total_hours", ("", 0.0))
+        notes_text, _ = row_data.get("notes", ("", 0.0))
 
         row = TimesheetRow(
             row_index=row_idx,
             date_text=date_text,
-            date_parsed=parse_date(date_text),
+            date_parsed=parse_date(date_text, expected_year),
             time_in_text=time_in_text,
             time_in_parsed=parse_time(time_in_text),
             time_out_text=time_out_text,
@@ -417,10 +634,86 @@ class Pipeline:
             time_in_confidence=time_in_conf,
             time_out_confidence=time_out_conf,
             hours_confidence=hours_conf,
-            date_source=sources["date"],
-            time_in_source=sources["time_in"],
-            time_out_source=sources["time_out"],
-            hours_source=sources["total_hours"],
+            date_source=sources.get("date", OcrSource.PPOCR),
+            time_in_source=sources.get("time_in", OcrSource.PPOCR),
+            time_out_source=sources.get("time_out", OcrSource.PPOCR),
+            hours_source=sources.get("total_hours", OcrSource.PPOCR),
         )
 
         return row
+
+    def _collect_row_metrics(self, row: TimesheetRow, record: TimesheetRecord) -> None:
+        """Collect per-row benchmark metrics after extraction and validation."""
+        corrections = []
+        corrections_detail_parts = []
+
+        # Track corrections: raw OCR text vs parsed value
+        for field_name, raw, parsed in [
+            ("date", row.date_text, str(row.date_parsed) if row.date_parsed else ""),
+            (
+                "time_in",
+                row.time_in_text,
+                row.time_in_parsed.strftime("%H:%M") if row.time_in_parsed else "",
+            ),
+            (
+                "time_out",
+                row.time_out_text,
+                row.time_out_parsed.strftime("%H:%M") if row.time_out_parsed else "",
+            ),
+            (
+                "hours",
+                row.total_hours_text,
+                str(row.total_hours_parsed)
+                if row.total_hours_parsed is not None
+                else "",
+            ),
+        ]:
+            raw_stripped = raw.strip()
+            parsed_stripped = parsed.strip()
+            if raw_stripped and parsed_stripped and raw_stripped != parsed_stripped:
+                corrections.append((field_name, raw_stripped, parsed_stripped))
+                corrections_detail_parts.append(
+                    f"{field_name}|{raw_stripped}|{parsed_stripped}"
+                )
+
+        row_metrics = RowMetrics(
+            source_file=record.source_file,
+            page_number=record.page_number,
+            row_index=row.row_index,
+            employee_name=record.employee_name,
+            patient_name=record.patient_name,
+            raw_ocr_date=row.date_text,
+            raw_ocr_time_in=row.time_in_text,
+            raw_ocr_time_out=row.time_out_text,
+            raw_ocr_hours=row.total_hours_text,
+            parsed_date=str(row.date_parsed) if row.date_parsed else "",
+            parsed_time_in=row.time_in_parsed.strftime("%H:%M")
+            if row.time_in_parsed
+            else "",
+            parsed_time_out=row.time_out_parsed.strftime("%H:%M")
+            if row.time_out_parsed
+            else "",
+            parsed_hours=str(row.total_hours_parsed)
+            if row.total_hours_parsed is not None
+            else "",
+            date_confidence=row.date_confidence,
+            time_in_confidence=row.time_in_confidence,
+            time_out_confidence=row.time_out_confidence,
+            hours_confidence=row.hours_confidence,
+            date_source=row.date_source.value if hasattr(row, "date_source") else "",
+            time_in_source=row.time_in_source.value
+            if hasattr(row, "time_in_source")
+            else "",
+            time_out_source=row.time_out_source.value
+            if hasattr(row, "time_out_source")
+            else "",
+            hours_source=row.hours_source.value if hasattr(row, "hours_source") else "",
+            calculated_hours=row.calculated_hours(),
+            total_hours_text=row.total_hours_text,
+            is_overnight=row.is_overnight,
+            status=row.status.value,
+            validation_errors="; ".join(row.validation_errors),
+            corrections_applied=len(corrections),
+            corrections_detail="; ".join(corrections_detail_parts),
+        )
+        self.benchmark.add_row(row_metrics)

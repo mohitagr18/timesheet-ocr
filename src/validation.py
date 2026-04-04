@@ -27,6 +27,10 @@ def validate_record(record: TimesheetRecord, config: AppConfig) -> list[str]:
     dup_warnings = _check_duplicates(record)
     warnings.extend(dup_warnings)
 
+    # Check for overlapping shifts on same date
+    overlap_warnings = _check_overlapping_shifts(record)
+    warnings.extend(overlap_warnings)
+
     # Check for daily 24h limit
     limit_warnings = _check_daily_hours(record)
     warnings.extend(limit_warnings)
@@ -115,6 +119,73 @@ def _check_duplicates(record: TimesheetRecord) -> list[str]:
     return warnings
 
 
+def _check_overlapping_shifts(record: TimesheetRecord) -> list[str]:
+    """Flag rows with overlapping time ranges on the same date.
+
+    Rule: Only one person can work on a given day during a given time period.
+    If two shifts on the same date have overlapping time ranges, flag both.
+    """
+    from collections import defaultdict
+
+    warnings = []
+    by_date: dict[date, list[TimesheetRow]] = defaultdict(list)
+
+    for row in record.rows:
+        if row.date_parsed and row.time_in_parsed and row.time_out_parsed:
+            by_date[row.date_parsed].append(row)
+
+    for date_val, date_rows in by_date.items():
+        if len(date_rows) < 2:
+            continue
+
+        for i, row_a in enumerate(date_rows):
+            for row_b in date_rows[i + 1 :]:
+                if _times_overlap(row_a, row_b):
+                    if "overlapping_shift" not in row_a.validation_errors:
+                        row_a.validation_errors.append("overlapping_shift")
+                        row_a.status = RowStatus.FLAGGED
+                    if "overlapping_shift" not in row_b.validation_errors:
+                        row_b.validation_errors.append("overlapping_shift")
+                        row_b.status = RowStatus.FLAGGED
+                    warnings.append(
+                        f"row_{row_a.row_index} & row_{row_b.row_index}: "
+                        f"overlapping_shift on {date_val}"
+                    )
+
+    return warnings
+
+
+def _times_overlap(a: TimesheetRow, b: TimesheetRow) -> bool:
+    """Check if two rows have overlapping time ranges on the same date."""
+    if not (
+        a.time_in_parsed
+        and a.time_out_parsed
+        and b.time_in_parsed
+        and b.time_out_parsed
+    ):
+        return False
+
+    a_in = a.time_in_parsed
+    a_out = a.time_out_parsed
+    b_in = b.time_in_parsed
+    b_out = b.time_out_parsed
+
+    # Handle overnight shifts: if out < in, treat out as next day
+    from datetime import datetime, timedelta
+
+    a_dt_in = datetime.combine(date.today(), a_in)
+    a_dt_out = datetime.combine(date.today(), a_out)
+    if a_dt_out <= a_dt_in:
+        a_dt_out += timedelta(days=1)
+
+    b_dt_in = datetime.combine(date.today(), b_in)
+    b_dt_out = datetime.combine(date.today(), b_out)
+    if b_dt_out <= b_dt_in:
+        b_dt_out += timedelta(days=1)
+
+    return a_dt_in < b_dt_out and b_dt_in < a_dt_out
+
+
 def _check_daily_hours(record: TimesheetRecord) -> list[str]:
     """Flag rows if daily total hours exceed 24.0."""
     warnings = []
@@ -128,7 +199,9 @@ def _check_daily_hours(record: TimesheetRecord) -> list[str]:
                 row.is_over_24h_limit = True
                 row.status = RowStatus.FLAGGED
                 row.validation_errors.append("duplicate_shift_exceeds_24h")
-                warnings.append(f"row_{row.row_index}: duplicate_shift_exceeds_24h sum={current_sum + calculated}")
+                warnings.append(
+                    f"row_{row.row_index}: duplicate_shift_exceeds_24h sum={current_sum + calculated}"
+                )
             else:
                 daily_sums[row.date_parsed] = current_sum + calculated
 
