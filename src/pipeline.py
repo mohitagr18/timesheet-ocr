@@ -34,6 +34,7 @@ from .models import (
 from .ocr_engine import OcrEngine
 from .parser import (
     clean_name,
+    disambiguate_times,
     extract_expected_year,
     extract_week_dates,
     parse_date,
@@ -387,15 +388,19 @@ class Pipeline:
                     ):
                         continue
 
+                    time_in_parsed, time_out_parsed = disambiguate_times(
+                        time_in_text, time_out_text, hours_text
+                    )
+
                     rows.append(
                         TimesheetRow(
                             row_index=valid_row_idx,
                             date_text=date_text,
                             date_parsed=parse_date(date_text, expected_year),
                             time_in_text=time_in_text,
-                            time_in_parsed=parse_time(time_in_text),
+                            time_in_parsed=time_in_parsed,
                             time_out_text=time_out_text,
-                            time_out_parsed=parse_time(time_out_text),
+                            time_out_parsed=time_out_parsed,
                             total_hours_text=hours_text,
                             total_hours_parsed=parse_hours(hours_text),
                             date_confidence=0.9,

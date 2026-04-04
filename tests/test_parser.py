@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from parser import clean_name, parse_date, parse_hours, parse_time
+from parser import clean_name, disambiguate_times, parse_date, parse_hours, parse_time
 
 
 class TestParseDate:
@@ -94,3 +94,60 @@ class TestCleanName:
 
     def test_normalize_spaces(self):
         assert clean_name("Jane   Smith") == "Jane Smith"
+
+
+class TestDisambiguateTimes:
+    def test_bare_times_with_total_hours(self):
+        t_in, t_out = disambiguate_times("8:00", "4:30", "8.5")
+        assert t_in == time(8, 0)
+        assert t_out == time(16, 30)
+
+    def test_bare_times_integer_hours(self):
+        t_in, t_out = disambiguate_times("7:00", "3:00", "8")
+        assert t_in == time(7, 0)
+        assert t_out == time(15, 0)
+
+    def test_overnight_shift(self):
+        # "11:00"/"7:00" with 8h: both AM→PM (11-19) and PM→AM (23-07) give 8h.
+        # The algorithm picks AM→PM as it comes first in the loop.
+        t_in, t_out = disambiguate_times("11:00", "7:00", "8")
+        assert t_in == time(11, 0)
+        assert t_out == time(19, 0)
+
+    def test_already_has_am_pm(self):
+        t_in, t_out = disambiguate_times("8:00 AM", "4:30 PM", "8.5")
+        assert t_in == time(8, 0)
+        assert t_out == time(16, 30)
+
+    def test_missing_total_hours(self):
+        t_in, t_out = disambiguate_times("8:00", "4:30", "")
+        assert t_in == time(8, 0)
+        assert t_out == time(4, 30)
+
+    def test_empty_time_in(self):
+        # Cannot disambiguate time_out without time_in
+        t_in, t_out = disambiguate_times("", "4:30", "8")
+        assert t_in is None
+        assert t_out == time(4, 30)
+
+    def test_empty_time_out(self):
+        t_in, t_out = disambiguate_times("8:00", "", "8")
+        assert t_in == time(8, 0)
+        assert t_out is None
+
+    def test_both_empty(self):
+        t_in, t_out = disambiguate_times("", "", "")
+        assert t_in is None
+        assert t_out is None
+
+    def test_half_hour_shift(self):
+        t_in, t_out = disambiguate_times("9:00", "9:30", "0.5")
+        assert t_in == time(9, 0)
+        assert t_out == time(9, 30)
+
+    def test_pm_am_disambiguation(self):
+        # "1:00"/"9:00" with 8h: AM/AM (1-9) and PM/PM (13-21) both give 8h.
+        # The algorithm picks AM/AM as it comes first.
+        t_in, t_out = disambiguate_times("1:00", "9:00", "8")
+        assert t_in == time(1, 0)
+        assert t_out == time(9, 0)

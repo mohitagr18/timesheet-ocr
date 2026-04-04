@@ -201,6 +201,123 @@ def parse_hours(text: str) -> Optional[float]:
     return None
 
 
+def _has_period_marker(text: str) -> bool:
+    """Check if a time string contains an AM/PM marker."""
+    return bool(re.search(r"[AP]\.?M\.?", text, re.IGNORECASE))
+
+
+def _try_parse_with_period(text: str, period: str) -> Optional[time]:
+    """Parse a time string with an explicit AM or PM suffix."""
+    if not text.strip():
+        return None
+    text = text.strip().upper()
+    text = text.replace("O", "0").replace("o", "0")
+    text = text.replace("I", "1").replace("l", "1")
+    text = text.replace("S", "5").replace("s", "5")
+    text = text.replace("B", "8")
+    text = text.replace("Q", "2")
+    text = text.replace("Z", "2")
+    text = text.replace("?", "2")
+    text = re.sub(r"(\d)\.(\d)", r"\1:\2", text)
+    text = re.sub(r"\s*:\s*", ":", text)
+
+    match = re.search(r"(\d{1,2}):?(\d{2})", text)
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+
+    if period.upper().startswith("P") and hour != 12:
+        hour += 12
+    elif period.upper().startswith("A") and hour == 12:
+        hour = 0
+
+    try:
+        return time(hour, minute)
+    except ValueError:
+        return None
+
+
+def _calc_hours(t_in: Optional[time], t_out: Optional[time]) -> Optional[float]:
+    """Calculate hours between two times, supporting overnight shifts."""
+    if t_in is None or t_out is None:
+        return None
+    from datetime import datetime, timedelta
+
+    dt_in = datetime.combine(date.today(), t_in)
+    dt_out = datetime.combine(date.today(), t_out)
+    if dt_out <= dt_in:
+        dt_out += timedelta(days=1)
+    delta = dt_out - dt_in
+    return round(delta.total_seconds() / 3600, 2)
+
+
+def disambiguate_times(
+    time_in_text: str,
+    time_out_text: str,
+    total_hours_text: str,
+) -> tuple[Optional[time], Optional[time]]:
+    """Parse time_in and time_out, using total_hours to resolve AM/PM ambiguity.
+
+    When the VLM returns times without AM/PM markers (e.g., "8:00" and "4:30"),
+    this function tries all AM/PM combinations and picks the one whose calculated
+    hours is closest to the written total_hours.
+
+    Returns (time_in_parsed, time_out_parsed).
+    """
+    time_in_parsed = parse_time(time_in_text)
+    time_out_parsed = parse_time(time_out_text)
+
+    has_in_period = _has_period_marker(time_in_text)
+    has_out_period = _has_period_marker(time_out_text)
+
+    if has_in_period or has_out_period:
+        return time_in_parsed, time_out_parsed
+
+    total_hours = parse_hours(total_hours_text)
+    if total_hours is None or total_hours <= 0:
+        return time_in_parsed, time_out_parsed
+
+    in_bare = time_in_text.strip()
+    out_bare = time_out_text.strip()
+
+    if not in_bare or not out_bare:
+        return time_in_parsed, time_out_parsed
+
+    periods = ["AM", "PM"]
+    best_in = time_in_parsed
+    best_out = time_out_parsed
+    best_diff = (
+        abs(_calc_hours(time_in_parsed, time_out_parsed) - total_hours)
+        if time_in_parsed and time_out_parsed
+        else float("inf")
+    )
+
+    for in_p in periods:
+        for out_p in periods:
+            candidate_in = _try_parse_with_period(in_bare, in_p)
+            candidate_out = _try_parse_with_period(out_bare, out_p)
+            if candidate_in is None or candidate_out is None:
+                continue
+            calc = _calc_hours(candidate_in, candidate_out)
+            if calc is None:
+                continue
+            diff = abs(calc - total_hours)
+            if diff < best_diff:
+                best_diff = diff
+                best_in = candidate_in
+                best_out = candidate_out
+            elif diff == best_diff and diff == 0:
+                if (in_p == "AM" and out_p == "PM") and (
+                    best_in != candidate_in or best_out != candidate_out
+                ):
+                    best_in = candidate_in
+                    best_out = candidate_out
+
+    return best_in, best_out
+
+
 def clean_name(text: str) -> str:
     """Clean up an employee or patient name from OCR output."""
     # Remove leading/trailing whitespace and normalize internal spaces
