@@ -35,6 +35,20 @@ for _, _, color in APPROACHES:
     FILLS[color] = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
 
+def _short_label(label, max_len=16):
+    """Shorten a label while keeping the last distinguishing word visible."""
+    if len(label) <= max_len:
+        return label
+    suffix = label.split("(")[-1].rstrip(")") if "(" in label else label.split()[-1]
+    prefix_max = max_len - len(suffix) - 3
+    prefix = (
+        label[:prefix_max].rsplit(" ", 1)[0]
+        if " " in label[:prefix_max]
+        else label[:prefix_max]
+    )
+    return f"{prefix} ({suffix})"
+
+
 def style_header_row(ws, row, max_col):
     for col in range(1, max_col + 1):
         cell = ws.cell(row=row, column=col)
@@ -202,7 +216,7 @@ def create_benchmark_combined():
     # Columns: Date | Hours+Status per approach
     comp_headers = ["Date"]
     for folder, d in data.items():
-        short = d["label"][:15]
+        short = _short_label(d["label"])
         comp_headers.append(f"Hours ({short})")
         comp_headers.append(f"Status ({short})")
 
@@ -299,7 +313,7 @@ def create_merged_combined():
     # Columns: Date | Hours+Status per approach
     comp_headers = ["Date"]
     for folder, d in data.items():
-        short = d["label"][:15]
+        short = _short_label(d["label"])
         comp_headers.append(f"Hours ({short})")
         comp_headers.append(f"Status ({short})")
 

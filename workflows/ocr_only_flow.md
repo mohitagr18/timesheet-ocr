@@ -34,8 +34,8 @@ graph TD
     M --> N[Pass Row to Validation Sandbox]
     N --> O[Export to Merged Excel File & Review Queue]
     
-    style J fill:#ffcccc
-    style K fill:#e8e8e8
+    style J fill:#ffebee,stroke:#c62828,color:#000
+    style K fill:#f5f5f5,stroke:#616161,color:#000
 ```
 
 ## Key Characteristics

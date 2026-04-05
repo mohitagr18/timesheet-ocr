@@ -39,9 +39,9 @@ graph TD
     P --> Q[Pass Row to Validation Sandbox]
     Q --> R[Export to Merged Excel File & Review Queue]
     
-    style E fill:#fff3cd
-    style M fill:#f8d7da
-    style J fill:#d4edda
+    style E fill:#fff8e1,stroke:#f9a825,color:#000
+    style M fill:#ffebee,stroke:#c62828,color:#000
+    style J fill:#e8f5e9,stroke:#2e7d32,color:#000
 ```
 
 ## Key Characteristics
