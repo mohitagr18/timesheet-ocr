@@ -74,6 +74,25 @@ def load_benchmark(folder):
     if not bench_files:
         return None
 
+    # Also load merged results to fill in missing hours
+    merged_path = f"output/{folder}/merged_results.xlsx"
+    merged_by_date = {}
+    if os.path.exists(merged_path):
+        mwb = openpyxl.load_workbook(merged_path)
+        mws = mwb.active
+        mheader = None
+        for mrow in mws.iter_rows(min_row=1, values_only=True):
+            if mheader is None:
+                mheader = [str(c).strip() if c else "" for c in mrow]
+                continue
+            if not any(mrow):
+                continue
+            mrec = dict(zip(mheader, mrow))
+            date_val = str(mrec.get("Date", "")).strip()
+            if date_val:
+                merged_by_date[date_val] = mrec
+        mwb.close()
+
     # Aggregate across all patient files
     agg_summary = {}
     all_pages = []
@@ -91,6 +110,29 @@ def load_benchmark(folder):
 
         pages = list(wb["Page Details"].iter_rows(min_row=2, values_only=True))
         rows = list(wb["Row-Level"].iter_rows(min_row=2, values_only=True))
+
+        # Fill missing hours from merged results
+        if merged_by_date:
+            new_rows = []
+            for r in rows:
+                date_val = str(r[6]) if len(r) > 6 and r[6] else ""
+                hours_val = r[18] if len(r) > 18 else None
+                if (
+                    date_val
+                    and (hours_val is None or hours_val == "")
+                    and date_val in merged_by_date
+                ):
+                    mr = merged_by_date[date_val]
+                    hours = mr.get("Total Hours") or mr.get("Calculated Hours", "")
+                    # Create a new row tuple with hours filled in
+                    r_list = list(r)
+                    while len(r_list) <= 18:
+                        r_list.append(None)
+                    r_list[18] = hours
+                    new_rows.append(tuple(r_list))
+                else:
+                    new_rows.append(r)
+            rows = new_rows
 
         total_time += summary.get("Total Processing Time (s)", 0) or 0
         all_pages.extend(pages)

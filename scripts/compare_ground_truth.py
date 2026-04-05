@@ -44,52 +44,102 @@ THIN_BORDER = Border(
 HOURS_TOLERANCE = 0.25  # ±15 minutes
 
 
-def parse_time(time_str):
-    """Parse time string like '7:00 AM' to minutes since midnight."""
-    if not time_str or not isinstance(time_str, str):
+def parse_time(val):
+    """Parse time value to minutes since midnight. Handles multiple formats:
+    - String: '7:00 AM', '3:00 pm'
+    - Integer: 830 (8:30), 1530 (15:30)
+    - datetime: datetime(2026, 4, 5, 14, 0) — extracts hour/minute
+    """
+    if val is None:
         return None
-    time_str = time_str.strip()
-    match = re.match(r"(\d{1,2}):?(\d{2})?\s*(AM|PM|am|pm|Am|Pm)?", time_str)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    ampm = match.group(3)
-    if ampm and ampm.lower() == "pm" and hour != 12:
-        hour += 12
-    elif ampm and ampm.lower() == "am" and hour == 12:
-        hour = 0
-    return hour * 60 + minute
 
+    # datetime object — extract hour/minute
+    if isinstance(val, datetime):
+        return val.hour * 60 + val.minute
 
-def parse_hours(hours_val):
-    """Parse hours to float."""
-    if hours_val is None:
+    # Numeric (int/float) — treat as 24h military time without colon
+    if isinstance(val, (int, float)):
+        v = int(val)
+        hour = v // 100
+        minute = v % 100
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour * 60 + minute
         return None
-    if isinstance(hours_val, (int, float)):
-        return float(hours_val)
+
+    val = str(val).strip()
+    if not val:
+        return None
+
+    # String with AM/PM: '7:00 AM', '3:00 pm'
+    match = re.match(r"(\d{1,2}):?(\d{2})?\s*(AM|PM|am|pm|Am|Pm)?", val)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        ampm = match.group(3)
+        if ampm and ampm.lower() == "pm" and hour != 12:
+            hour += 12
+        elif ampm and ampm.lower() == "am" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour * 60 + minute
+
+    # Fallback: treat as military time string '830' or '1530'
     try:
-        return float(str(hours_val).strip())
+        v = int(val.replace(":", ""))
+        hour = v // 100
+        minute = v % 100
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour * 60 + minute
     except (ValueError, TypeError):
+        pass
+
+    return None
+
+
+def parse_date(val):
+    """Parse date value to YYYY-MM-DD string. Handles multiple formats:
+    - String: '1/7/26', '01/07/2026'
+    - datetime: datetime(2026, 2, 4)
+    """
+    if val is None:
         return None
 
+    # datetime object
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d")
 
-def hours_match(extracted, ground_truth, tolerance=HOURS_TOLERANCE):
-    """Check if extracted hours match ground truth within tolerance."""
-    ext = parse_hours(extracted)
-    gt = parse_hours(ground_truth)
-    if ext is None or gt is None:
-        return False
-    return abs(ext - gt) <= tolerance
+    val = str(val).strip()
+    if not val:
+        return None
+
+    # Try M/D/YY or M/D/YYYY
+    match = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", val)
+    if match:
+        month = int(match.group(1))
+        day = int(match.group(2))
+        year = int(match.group(3))
+        if year < 100:
+            year += 2000
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    # Try YYYY-MM-DD
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", val)
+    if match:
+        return val
+
+    return val
 
 
-def time_match(extracted, ground_truth, tolerance_minutes=30):
-    """Check if extracted time matches ground truth within tolerance."""
-    ext = parse_time(str(extracted) if extracted else "")
-    gt = parse_time(str(ground_truth) if ground_truth else "")
-    if ext is None or gt is None:
-        return False
-    return abs(ext - gt) <= tolerance_minutes
+def compute_hours_from_times(time_in_minutes, time_out_minutes):
+    """Compute hours between two time values (minutes since midnight).
+    Handles overnight shifts (time_out < time_in means next day).
+    """
+    if time_in_minutes is None or time_out_minutes is None:
+        return None
+    diff = time_out_minutes - time_in_minutes
+    if diff < 0:
+        diff += 24 * 60  # overnight
+    return diff / 60.0
 
 
 def load_ground_truth():
@@ -173,15 +223,25 @@ def load_approach_data(approach_id):
                 if not any(row):
                     continue
                 record = dict(zip(header, row))
+                # Normalize column names for easier matching
+                record["Date"] = record.get("Parsed Date", "")
+                record["Hours"] = record.get(
+                    "Parsed Hours", record.get("Written Hours")
+                )
+                record["Status"] = record.get("Status", "")
+                record["Time In"] = record.get("Parsed Time In", "")
+                record["Time Out"] = record.get("Parsed Time Out", "")
+                record["Employee"] = record.get("Employee Name", "")
                 all_rows.append(record)
         wb.close()
 
-    # Also load merged results for employee name
+    # Also load merged results to fill in missing hours
     merged_path = f"output/{approach_id}/merged_results.xlsx"
     if os.path.exists(merged_path):
         wb = openpyxl.load_workbook(merged_path, read_only=True)
         ws = wb.active
         header = None
+        merged_by_date = {}
         for row in ws.iter_rows(values_only=True):
             if header is None:
                 header = [str(c).strip() if c else "" for c in row]
@@ -189,9 +249,24 @@ def load_approach_data(approach_id):
             if not any(row):
                 continue
             record = dict(zip(header, row))
-            # Merge employee name into benchmark rows
-            all_rows.append(record)
+            date = parse_date(record.get("Date", ""))
+            if date:
+                merged_by_date[date] = record
         wb.close()
+
+        # Fill missing hours from merged results
+        for record in all_rows:
+            date = parse_date(record.get("Date", ""))
+            if date and date in merged_by_date:
+                mr = merged_by_date[date]
+                if record["Hours"] is None:
+                    record["Hours"] = mr.get("Total Hours")
+                if record["Status"] in ("", None):
+                    record["Status"] = mr.get("Status", "")
+                if not record["Time In"]:
+                    record["Time In"] = mr.get("Time In", "")
+                if not record["Time Out"]:
+                    record["Time Out"] = mr.get("Time Out", "")
 
     print(f"  {approach_id}: {len(all_rows)} rows loaded")
     return all_rows
@@ -204,7 +279,9 @@ def compare_approach(ground_truth, approach_id, name_mapping):
     results = []
     for gt_row in ground_truth:
         source_file = gt_row["source_file"]
-        gt_date = str(gt_row["date"]).strip()
+        gt_date = parse_date(gt_row["date"])
+        if gt_date is None:
+            gt_date = str(gt_row["date"]).strip()
         gt_hours = gt_row.get("total_hours")
         gt_time_in = gt_row.get("time_in")
         gt_time_out = gt_row.get("time_out")
@@ -213,8 +290,11 @@ def compare_approach(ground_truth, approach_id, name_mapping):
         # Find matching row in approach output
         matched = None
         for ar in approach_rows:
-            ar_date = str(ar.get("Date", "")).strip()
-            if ar_date == gt_date or ar_date.endswith(gt_date):
+            ar_date_raw = ar.get("Date", "")
+            ar_date = (
+                parse_date(ar_date_raw) if ar_date_raw else str(ar_date_raw).strip()
+            )
+            if ar_date == gt_date:
                 matched = ar
                 break
 
@@ -225,9 +305,35 @@ def compare_approach(ground_truth, approach_id, name_mapping):
             ext_time_out = matched.get("Time Out", "")
             ext_employee = matched.get("Employee", "")
 
-            hours_ok = hours_match(ext_hours, gt_hours)
-            time_in_ok = time_match(ext_time_in, gt_time_in)
-            time_out_ok = time_match(ext_time_out, gt_time_out)
+            # Parse ground truth times
+            gt_time_in_min = parse_time(gt_time_in)
+            gt_time_out_min = parse_time(gt_time_out)
+            gt_hours_calc = compute_hours_from_times(gt_time_in_min, gt_time_out_min)
+            gt_hours_val = gt_hours_calc if gt_hours_calc is not None else gt_hours
+
+            # Parse extracted times
+            ext_time_in_min = parse_time(ext_time_in)
+            ext_time_out_min = parse_time(ext_time_out)
+
+            # Compare hours (within tolerance)
+            hours_ok = False
+            if ext_hours is not None and gt_hours_val is not None:
+                try:
+                    hours_ok = (
+                        abs(float(ext_hours) - float(gt_hours_val)) <= HOURS_TOLERANCE
+                    )
+                except (ValueError, TypeError):
+                    pass
+
+            # Compare times (within 30 min tolerance)
+            time_in_ok = False
+            if ext_time_in_min is not None and gt_time_in_min is not None:
+                time_in_ok = abs(ext_time_in_min - gt_time_in_min) <= 30
+
+            time_out_ok = False
+            if ext_time_out_min is not None and gt_time_out_min is not None:
+                time_out_ok = abs(ext_time_out_min - gt_time_out_min) <= 30
+
             status_ok = ext_status.lower() == "accepted" if hours_ok else False
 
             results.append(
@@ -422,12 +528,22 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
         cell.border = THIN_BORDER
     row += 1
 
+    # Build filename → anonymized name mapping
+    anon_map = {
+        "C.Ferguson Timesheets - 010726-011326.pdf": "patient_a_week1",
+        "J.Flemming Timesheets - 012826-020326.pdf": "patient_b_week2",
+        "K.Drewry Timesheets 020426-021026.pdf": "patient_c_week3",
+    }
+
     for gt_row in ground_truth:
         source_file = gt_row["source_file"]
-        gt_date = str(gt_row["date"]).strip()
+        anon_name = anon_map.get(source_file, source_file)
+        gt_date = parse_date(gt_row["date"])
+        if gt_date is None:
+            gt_date = str(gt_row["date"]).strip()
         gt_hours = gt_row.get("total_hours", "")
 
-        ws.cell(row=row, column=1, value=source_file).border = THIN_BORDER
+        ws.cell(row=row, column=1, value=anon_name).border = THIN_BORDER
         ws.cell(row=row, column=1).alignment = Alignment(
             horizontal="left", wrap_text=True
         )
@@ -435,33 +551,35 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
         ws.cell(row=row, column=3, value=gt_hours).border = THIN_BORDER
 
         col = 4
-        for approach_id, approach_label in APPROACHES:
-            for _, _, approach_results in all_approach_results:
-                if approach_id == approach_id:
-                    matched = None
-                    for r in approach_results:
-                        if r["date"] == gt_date and r["source_file"] == source_file:
-                            matched = r
-                            break
-
-                    if matched:
-                        ws.cell(
-                            row=row, column=col, value=matched["ext_hours"]
-                        ).border = THIN_BORDER
-                        col += 1
-                        correct = matched["all_correct"]
-                        ws.cell(
-                            row=row, column=col, value="YES" if correct else "NO"
-                        ).border = THIN_BORDER
-                        ws.cell(row=row, column=col).fill = (
-                            MATCH_FILL if correct else MISMATCH_FILL
-                        )
-                    else:
-                        ws.cell(row=row, column=col, value="").border = THIN_BORDER
-                        col += 1
-                        ws.cell(row=row, column=col, value="N/A").border = THIN_BORDER
-                    col += 1
+        for aid, alabel in APPROACHES:
+            matched = None
+            for rid, rlabel, approach_results in all_approach_results:
+                if rid != aid:
+                    continue
+                for r in approach_results:
+                    if r["date"] == gt_date:
+                        matched = r
+                        break
+                if matched:
                     break
+
+            if matched:
+                ws.cell(
+                    row=row, column=col, value=matched["ext_hours"]
+                ).border = THIN_BORDER
+                col += 1
+                correct = matched["all_correct"]
+                ws.cell(
+                    row=row, column=col, value="YES" if correct else "NO"
+                ).border = THIN_BORDER
+                ws.cell(row=row, column=col).fill = (
+                    MATCH_FILL if correct else MISMATCH_FILL
+                )
+            else:
+                ws.cell(row=row, column=col, value="").border = THIN_BORDER
+                col += 1
+                ws.cell(row=row, column=col, value="N/A").border = THIN_BORDER
+            col += 1
         row += 1
 
     # Column widths
