@@ -53,6 +53,7 @@ def render_page(
     page_number: int,
     source_file: str,
     output_dir: Path,
+    prefix: str = "",
 ) -> Path:
     """Render annotated page image with all visualization layers.
 
@@ -175,7 +176,7 @@ def render_page(
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(source_file).stem
-    filename = f"{stem}_page{page_number}.png"
+    filename = f"{prefix}{stem}_page{page_number}.png"
     out_path = output_dir / filename
     cv2.imwrite(str(out_path), viz)
     logger.info(f"Debug visualization saved: {out_path}")

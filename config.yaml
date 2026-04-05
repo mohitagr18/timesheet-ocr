@@ -1,4 +1,4 @@
-extraction_mode: "vlm_full_page"   # 'ppocr_grid' | 'vlm_full_page' | 'ocr_only' | 'layout_guided_vlm_local' | 'layout_guided_vlm_cloud'
+extraction_mode: "ocr_only"   # 'ppocr_grid' | 'vlm_full_page' | 'ocr_only' | 'layout_guided_vlm_local' | 'layout_guided_vlm_cloud'
 
 # --- Input / Output ---
 paths:

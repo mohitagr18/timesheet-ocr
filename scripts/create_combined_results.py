@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 
 APPROACHES = [
+    ("ocr_only", "OCR Only (Baseline)", "E8E8E8"),
     ("ppocr_grid", "OCR + VLM Fallback", "E2EFDA"),
     ("vlm_full_page", "VLM Full Page", "D6E4F0"),
     ("layout_guided_vlm_local", "Layout-Guided VLM (Local)", "FFF2CC"),
@@ -159,84 +160,82 @@ def create_benchmark_combined():
 
     row += 1
 
-    # ROW-LEVEL COMPARISON (transposed: dates as columns, metrics as rows)
-    ws.cell(
-        row=row, column=1, value="ROW-LEVEL COMPARISON (matched by date + time_in)"
-    ).font = Font(bold=True, size=12)
+    # ROW-LEVEL COMPARISON (dates as rows, Hours+Status per approach as columns)
+    ws.cell(row=row, column=1, value="ROW-LEVEL COMPARISON (by date)").font = Font(
+        bold=True, size=12
+    )
     ws.cell(row=row, column=1).fill = SECTION_FILL
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
     row += 1
 
-    approach_rows = {}
+    # Build per-approach row lookups by date only
+    approach_by_date = {}
     for folder, d in data.items():
-        by_key = {}
+        by_date = {}
         for r in d["rows"]:
             date_val = str(r[6]) if len(r) > 6 and r[6] else ""
-            time_in = str(r[10]) if len(r) > 10 and r[10] else ""
-            by_key[(date_val, time_in)] = r
-        approach_rows[folder] = by_key
+            if date_val:
+                by_date[date_val] = r
+        approach_by_date[folder] = by_date
 
-    all_keys = set()
-    for by_key in approach_rows.values():
-        all_keys.update(by_key.keys())
-    all_keys = sorted(all_keys)
+    all_dates = set()
+    for by_date in approach_by_date.values():
+        all_dates.update(by_date.keys())
+    all_dates = sorted(all_dates)
 
-    # Transposed: first column = metric labels, remaining columns = dates
-    transposed_headers = ["Metric"] + [k[0] for k in all_keys]
-    for c, h in enumerate(transposed_headers, 1):
-        ws.cell(row=row, column=c, value=h)
-    style_header_row(ws, row, len(transposed_headers))
-    row += 1
-
+    # Columns: Date | Hours+Status per approach
+    comp_headers = ["Date"]
     for folder, d in data.items():
         short = d["label"][:15]
-        fill_color = FILLS.get(d.get("_color", ""), None)
+        comp_headers.append(f"Hours ({short})")
+        comp_headers.append(f"Status ({short})")
 
-        # Hours row
-        ws.cell(row=row, column=1, value=f"Hours ({short})")
-        ws.cell(row=row, column=1).border = THIN_BORDER
-        ws.cell(row=row, column=1).alignment = Alignment(
-            horizontal="left", wrap_text=True
-        )
-        ws.cell(row=row, column=1).fill = fill_color
-        for col_idx, key in enumerate(all_keys, 2):
-            r = approach_rows[folder].get(key)
-            hours = str(r[18]) if r and len(r) > 18 and r[18] is not None else ""
-            ws.cell(row=row, column=col_idx, value=hours)
-            style_data_cell(ws, row, col_idx, fill_color)
-        row += 1
+    for c, h in enumerate(comp_headers, 1):
+        ws.cell(row=row, column=c, value=h)
+    style_header_row(ws, row, len(comp_headers))
+    row += 1
 
-        # Status row
-        ws.cell(row=row, column=1, value=f"Status ({short})")
-        ws.cell(row=row, column=1).border = THIN_BORDER
-        ws.cell(row=row, column=1).alignment = Alignment(
-            horizontal="left", wrap_text=True
-        )
-        ws.cell(row=row, column=1).fill = fill_color
-        for col_idx, key in enumerate(all_keys, 2):
-            r = approach_rows[folder].get(key)
-            status = str(r[24]) if r and len(r) > 24 and r[24] else ""
-            if not r:
+    for date_val in all_dates:
+        ws.cell(row=row, column=1, value=date_val)
+        style_data_cell(ws, row, 1)
+
+        col = 2
+        for folder, d in data.items():
+            r = approach_by_date[folder].get(date_val)
+            fill_color = FILLS.get(d.get("_color", ""), None)
+
+            if r:
+                hours = str(r[18]) if len(r) > 18 and r[18] is not None else ""
+                status = str(r[24]) if len(r) > 24 and r[24] else ""
+            else:
+                hours = ""
                 status = "not extracted"
+
+            ws.cell(row=row, column=col, value=hours)
+            style_data_cell(ws, row, col, fill_color)
+            col += 1
+
+            ws.cell(row=row, column=col, value=status)
             fill = fill_color
             if status == "accepted":
                 fill = MATCH_FILL
             elif status == "not extracted":
                 fill = MISMATCH_FILL
-            ws.cell(row=row, column=col_idx, value=status)
-            style_data_cell(ws, row, col_idx, fill)
+            style_data_cell(ws, row, col, fill)
+            col += 1
+
         row += 1
 
-    ws.column_dimensions["A"].width = 32
-    for i in range(2, len(transposed_headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 16
+    ws.column_dimensions["A"].width = 14
+    for i in range(2, len(comp_headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 22
 
     wb.save(BENCH_OUTPUT)
     print(f"Saved: {BENCH_OUTPUT}")
 
 
 def create_merged_combined():
-    """Create simplified merged comparison with Hours + Status only per approach."""
+    """Create simplified merged comparison with dates as rows, Hours+Status per approach."""
     data = {}
     for folder, label, _ in APPROACHES:
         rows = load_merged(folder)
@@ -280,52 +279,52 @@ def create_merged_combined():
         all_dates.update(by_date.keys())
     all_dates = sorted(all_dates)
 
-    # Transposed: first column = metric labels, remaining columns = dates
-    transposed_headers = ["Metric"] + all_dates
-    for c, h in enumerate(transposed_headers, 1):
-        ws.cell(row=row, column=c, value=h)
-    style_header_row(ws, row, len(transposed_headers))
-    row += 1
-
+    # Columns: Date | Hours+Status per approach
+    comp_headers = ["Date"]
     for folder, d in data.items():
         short = d["label"][:15]
+        comp_headers.append(f"Hours ({short})")
+        comp_headers.append(f"Status ({short})")
 
-        # Hours row
-        ws.cell(row=row, column=1, value=f"Hours ({short})")
-        ws.cell(row=row, column=1).border = THIN_BORDER
-        ws.cell(row=row, column=1).alignment = Alignment(
-            horizontal="left", wrap_text=True
-        )
-        for col_idx, date_val in enumerate(all_dates, 2):
-            r = approach_by_date[folder].get(date_val)
-            hours = str(r[11]) if r and len(r) > 11 and r[11] is not None else ""
-            ws.cell(row=row, column=col_idx, value=hours)
-            style_data_cell(ws, row, col_idx)
-        row += 1
+    for c, h in enumerate(comp_headers, 1):
+        ws.cell(row=row, column=c, value=h)
+    style_header_row(ws, row, len(comp_headers))
+    row += 1
 
-        # Status row
-        ws.cell(row=row, column=1, value=f"Status ({short})")
-        ws.cell(row=row, column=1).border = THIN_BORDER
-        ws.cell(row=row, column=1).alignment = Alignment(
-            horizontal="left", wrap_text=True
-        )
-        for col_idx, date_val in enumerate(all_dates, 2):
+    for date_val in all_dates:
+        ws.cell(row=row, column=1, value=date_val)
+        style_data_cell(ws, row, 1)
+
+        col = 2
+        for folder, d in data.items():
             r = approach_by_date[folder].get(date_val)
-            status = str(r[17]) if r and len(r) > 17 and r[17] else ""
-            if not r:
+            fill_color = FILLS.get(d.get("_color", ""), None)
+
+            if r:
+                hours = str(r[11]) if len(r) > 11 and r[11] is not None else ""
+                status = str(r[17]) if len(r) > 17 and r[17] else ""
+            else:
+                hours = ""
                 status = "not extracted"
-            fill = None
+
+            ws.cell(row=row, column=col, value=hours)
+            style_data_cell(ws, row, col, fill_color)
+            col += 1
+
+            ws.cell(row=row, column=col, value=status)
+            fill = fill_color
             if status == "accepted":
                 fill = MATCH_FILL
             elif status == "not extracted":
                 fill = MISMATCH_FILL
-            ws.cell(row=row, column=col_idx, value=status)
-            style_data_cell(ws, row, col_idx, fill)
+            style_data_cell(ws, row, col, fill)
+            col += 1
+
         row += 1
 
-    ws.column_dimensions["A"].width = 32
-    for i in range(2, len(transposed_headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 16
+    ws.column_dimensions["A"].width = 14
+    for i in range(2, len(comp_headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 22
 
     wb.save(MERGED_OUTPUT)
     print(f"Saved: {MERGED_OUTPUT}")
@@ -344,6 +343,17 @@ def copy_debug_images():
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
                     print(f"Copied: {dst}")
+
+    # Also copy shared debug images from output/debug/ (for approaches that don't have their own debug dir)
+    shared_debug = "output/debug"
+    if os.path.exists(shared_debug):
+        for f in os.listdir(shared_debug):
+            if f.endswith(".png"):
+                src = os.path.join(shared_debug, f)
+                dst = os.path.join(OUTPUT_DIR, "debug", f)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                    print(f"Copied shared: {dst}")
 
 
 if __name__ == "__main__":

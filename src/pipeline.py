@@ -184,7 +184,12 @@ class Pipeline:
 
         # Snapshot for combined export
         extraction_mode = getattr(self.config, "extraction_mode", "ppocr_grid")
-        mode_label = "vlm" if extraction_mode == "vlm_full_page" else "ppocr"
+        if extraction_mode == "vlm_full_page":
+            mode_label = "vlm"
+        elif extraction_mode == "ocr_only":
+            mode_label = "ocr_only"
+        else:
+            mode_label = "ppocr"
         self.benchmark.snapshot_run(mode=mode_label)
 
         # 6. Summary
@@ -599,6 +604,112 @@ class Pipeline:
                         output_dir=self.config.debug_output_path,
                     )
 
+        elif self.config.extraction_mode == "ocr_only":
+            ocr_start = time_module.time()
+            if not self.ocr_engine._initialized:
+                init_start = time_module.time()
+                self.ocr_engine._ensure_initialized()
+                self._ocr_init_time = time_module.time() - init_start
+                page_metrics.ocr_init_time_s = self._ocr_init_time
+            ocr_result = self.ocr_engine.run(preprocessed)
+            page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
+            page_metrics.total_boxes_detected = len(ocr_result.boxes)
+
+            layout_start = time_module.time()
+            layout = detect_layout(image, self.config, ocr_result.boxes)
+            page_metrics.layout_detection_time_s = time_module.time() - layout_start
+
+            sig_threshold = self.config.debug.signature_ocr_threshold
+            is_sig_page = PhiAnonymizer.is_signature_page(
+                len(ocr_result.boxes), sig_threshold
+            )
+
+            if is_sig_page:
+                logger.info(
+                    f"Page {page_number} is a signature page ({len(ocr_result.boxes)} boxes < {sig_threshold} threshold). Skipping row extraction."
+                )
+                header_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.header_zone.x_start,
+                    layout.header_zone.y_start,
+                    layout.header_zone.x_end,
+                    layout.header_zone.y_end,
+                )
+                if header_boxes:
+                    sorted_header = sorted(
+                        header_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    if sorted_header:
+                        employee_name = clean_name(sorted_header[0].text)
+                        employee_conf = sorted_header[0].confidence
+            else:
+                generated_dates = None
+                if self.config.layout.transposed:
+                    generated_dates = extract_week_dates(
+                        source_file,
+                        self.config.validation.week_start_day,
+                        self.config.validation.week_length,
+                    )
+                    if generated_dates:
+                        logger.info(
+                            f"Generated week dates: {generated_dates[0]} → {generated_dates[-1]}"
+                        )
+
+                header_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.header_zone.x_start,
+                    layout.header_zone.y_start,
+                    layout.header_zone.x_end,
+                    layout.header_zone.y_end,
+                )
+
+                if header_boxes:
+                    sorted_header = sorted(
+                        header_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    if sorted_header:
+                        employee_name = clean_name(sorted_header[0].text)
+                        employee_conf = sorted_header[0].confidence
+
+                extraction_start = time_module.time()
+                empty_rows = 0
+                for row_idx, row_zone in enumerate(layout.row_zones):
+                    row = self._extract_row_ocr_only(
+                        all_boxes=ocr_result.boxes,
+                        row_zone=row_zone,
+                        row_idx=row_idx,
+                        layout=layout,
+                        expected_year=expected_year,
+                        generated_dates=generated_dates,
+                    )
+                    if row is not None:
+                        rows.append(row)
+                    else:
+                        empty_rows += 1
+                page_metrics.extraction_time_s = time_module.time() - extraction_start
+                page_metrics.rows_extracted = len(rows)
+                page_metrics.empty_rows_skipped = empty_rows
+                page_metrics.vlm_fallbacks = 0
+
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                    and not is_sig_page
+                ):
+                    from . import debug_viz
+
+                    debug_viz.render_page(
+                        image=image,
+                        ocr_boxes=ocr_result.boxes,
+                        layout=layout,
+                        field_bands=layout.field_bands,
+                        vlm_fallbacks=[],
+                        page_number=page_number,
+                        source_file=anon_filename,
+                        output_dir=self.config.debug_output_path,
+                        prefix="ocr_only_",
+                    )
+
         else:
             ocr_start = time_module.time()
             if not self.ocr_engine._initialized:
@@ -694,9 +805,8 @@ class Pipeline:
                 page_metrics.extraction_time_s = time_module.time() - extraction_start
                 page_metrics.rows_extracted = len(rows)
                 page_metrics.empty_rows_skipped = empty_rows
-                page_metrics.vlm_fallbacks = total_vlm_fallbacks
+                page_metrics.vlm_fallbacks = 0
 
-                # Debug visualization (if enabled, skip for signature pages)
                 if (
                     getattr(self.config, "debug", None)
                     and self.config.debug.visualize_ocr
@@ -709,7 +819,7 @@ class Pipeline:
                         ocr_boxes=ocr_result.boxes,
                         layout=layout,
                         field_bands=layout.field_bands,
-                        vlm_fallbacks=all_vlm_fallbacks,
+                        vlm_fallbacks=[],
                         page_number=page_number,
                         source_file=anon_filename,
                         output_dir=self.config.debug_output_path,
@@ -939,6 +1049,113 @@ class Pipeline:
             row_idx, row_data, sources, field_bounds, expected_year
         )
         return row, vlm_fallbacks, vlm_cells
+
+    def _extract_row_ocr_only(
+        self,
+        all_boxes,
+        row_zone,
+        row_idx,
+        layout,
+        expected_year=None,
+        generated_dates=None,
+    ) -> TimesheetRow | None:
+        """Extract data from a single row using OCR only — no VLM fallback."""
+        field_bounds = layout.field_bands
+
+        if self.config.layout.transposed:
+            return self._extract_transposed_row_ocr_only(
+                all_boxes=all_boxes,
+                row_zone=row_zone,
+                row_idx=row_idx,
+                field_bounds=field_bounds,
+                generated_dates=generated_dates,
+                expected_year=expected_year,
+            )
+
+        cell_data: dict[str, tuple[str, float]] = {}
+        sources: dict[str, OcrSource] = {}
+
+        for col_name, (start_pix, end_pix) in field_bounds.items():
+            col_boxes = boxes_in_zone(
+                all_boxes, start_pix, row_zone.y_start, end_pix, row_zone.y_end
+            )
+
+            if col_boxes:
+                text = " ".join(
+                    b.text for b in sorted(col_boxes, key=lambda b: b.x_center)
+                )
+                conf = min(b.confidence for b in col_boxes)
+            else:
+                text = ""
+                conf = 0.0
+
+            cell_data[col_name] = (text, conf)
+            sources[col_name] = OcrSource.PPOCR
+
+        if all(text == "" for text, _ in cell_data.values()):
+            return None
+
+        return self._build_timesheet_row(
+            row_idx, cell_data, sources, field_bounds, expected_year
+        )
+
+    def _extract_transposed_row_ocr_only(
+        self,
+        all_boxes,
+        row_zone,
+        row_idx,
+        field_bounds,
+        generated_dates,
+        expected_year=None,
+    ) -> TimesheetRow | None:
+        """Extract data from a transposed row using OCR only — no VLM fallback."""
+        x_left = row_zone.x_start
+        x_right = row_zone.x_end
+
+        if generated_dates and row_idx < len(generated_dates):
+            gen_date = generated_dates[row_idx]
+            date_text = gen_date.strftime("%m/%d/%Y")
+            date_conf = 1.0
+            date_source = OcrSource.GENERATED
+        else:
+            date_text = ""
+            date_conf = 0.0
+            date_source = OcrSource.PPOCR
+
+        row_data = {"date": (date_text, date_conf)}
+        sources = {"date": date_source}
+
+        for field_name in ["time_in", "time_out", "total_hours"]:
+            y_start, y_end = field_bounds.get(field_name, (0, 0))
+
+            cell_boxes = [
+                b
+                for b in all_boxes
+                if x_left <= b.x_center <= x_right
+                and y_start <= b.y_center <= y_end
+                and b.text.strip()
+            ]
+
+            if cell_boxes:
+                cell_boxes.sort(key=lambda b: b.y_center)
+                text = " ".join(b.text for b in cell_boxes)
+                conf = min(b.confidence for b in cell_boxes)
+            else:
+                text = ""
+                conf = 0.0
+
+            row_data[field_name] = (text, conf)
+            sources[field_name] = OcrSource.PPOCR
+
+        if all(
+            not row_data.get(k, ("", ""))[0].strip()
+            for k in ["time_in", "time_out", "total_hours"]
+        ):
+            return None
+
+        return self._build_timesheet_row(
+            row_idx, row_data, sources, field_bounds, expected_year
+        )
 
     def _build_timesheet_row(
         self, row_idx, row_data, sources, field_bounds, expected_year=None
