@@ -1,5 +1,6 @@
 """Create combined comparison outputs from all 5 approach results."""
 
+import glob
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from datetime import datetime
@@ -52,9 +53,11 @@ def style_data_cell(ws, row, col, fill=None):
 
 
 def load_benchmark(folder):
-    path = f"output/{folder}/benchmark_patient_a_week1.xlsx"
-    if not os.path.exists(path):
+    """Load benchmark Excel from approach output directory."""
+    bench_files = glob.glob(f"output/{folder}/benchmark_*.xlsx")
+    if not bench_files:
         return None
+    path = bench_files[0]
     wb = openpyxl.load_workbook(path)
     summary = {}
     for r in wb["Run Summary"].iter_rows(min_row=1, values_only=False):
@@ -76,6 +79,18 @@ def load_merged(folder):
     return list(ws.iter_rows(min_row=2, values_only=True))
 
 
+def _detect_input_file():
+    """Detect the input PDF name from benchmark files."""
+    for folder, _, _ in APPROACHES:
+        bench_files = glob.glob(f"output/{folder}/benchmark_*.xlsx")
+        if bench_files:
+            fname = os.path.basename(bench_files[0])
+            # Extract: benchmark_patient_a_week1.xlsx → patient_a_week1
+            stem = fname.replace("benchmark_", "").replace(".xlsx", "")
+            return stem.replace("_", " ").title()
+    return "Unknown"
+
+
 def create_benchmark_combined():
     """Create benchmark comparison grouped by approach with IEEE-paper-ready format."""
     data = {}
@@ -89,6 +104,7 @@ def create_benchmark_combined():
     ws = wb.active
     ws.title = "Approach Comparison"
 
+    input_name = _detect_input_file()
     row = 1
     ws.cell(
         row=row, column=1, value="Approach Comparison: Handwritten Timesheet OCR"
@@ -98,7 +114,7 @@ def create_benchmark_combined():
     ws.cell(
         row=row,
         column=1,
-        value=f"File: C.Ferguson Timesheets - 010726-011326.pdf | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        value=f"File: {input_name} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ).font = Font(italic=True, size=10)
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
     row += 2
@@ -246,6 +262,7 @@ def create_merged_combined():
     ws = wb.active
     ws.title = "Row Comparison"
 
+    input_name = _detect_input_file()
     row = 1
     ws.cell(
         row=row, column=1, value="Row-Level Comparison: All Approaches"
@@ -255,7 +272,7 @@ def create_merged_combined():
     ws.cell(
         row=row,
         column=1,
-        value=f"File: C.Ferguson Timesheets - 010726-011326.pdf | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        value=f"File: {input_name} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ).font = Font(italic=True, size=10)
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
     row += 2

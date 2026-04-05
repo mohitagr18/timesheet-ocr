@@ -8,7 +8,7 @@ paths:
 
 # --- OCR confidence thresholds ---
 confidence:
-  accept_t_grid extraction modehreshold: 0.90
+  accept_threshold: 0.90
   fallback_threshold: 0.75
 
 # --- PP-OCRv5 settings ---

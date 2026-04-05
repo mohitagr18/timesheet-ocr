@@ -212,6 +212,14 @@ input/
 # Output data (contains extracted PHI)
 output/
 
+# Debug artifacts in repo root
+debug_*.png
+debug_*.txt
+
+# Samples directory (placeholder)
+samples/*
+!samples/.gitkeep
+
 # Sample data
 samples/
 

@@ -1,126 +1,227 @@
 # Timesheet OCR
 
 <div align="center">
-  <h3>A fully local, privacy-first pipeline to extract, validate, and structure data from scanned handwritten home-health timesheets.</h3>
+  <h3>A privacy-first pipeline to extract, validate, and structure data from scanned handwritten home-health timesheets using 5 distinct approaches.</h3>
 </div>
 
 <br/>
 
-Designed to convert messy, handwritten PDF uploads into ultra-clean Excel databases while strictly flagging calculation errors or missed signatures.
-
----
-
-## 🚀 Key Features
-
-- **100% Local Inference**: Eliminates PHI/HIPAA compliance risks. Everything runs locally on Apple Silicon (or standard GPUs) using `paddleocr` and `ollama` (Qwen2.5-VL), ensuring patient data never leaves the machine.
-- **Dual Extraction Modes**: 
-  - **`ppocr_grid`**: High-speed deterministic grid slicing utilizing PaddleOCR for standard tabular forms. Includes a smart fallbacks mechanism that re-crops faint handwriting cells using original color imagery to enhance character recovery.
-  - **`vlm_full_page`**: Deep contextual Vision-LLM extraction using Qwen2.5-VL for deeply cursive, messy, or bespoke non-standard timesheets.
-- **Aggressive OCR Parser**: The parsing engine is highly tuned to automatically correct common PPOCR model hallucinations (e.g., automatically resolving `"Q:00PM"` to `2:00 PM` or `"8.00.0M"` to `8:00 AM`).
-- **Robust Validation Engine**: Automatically calculates written "Total Hours" against parsed Time-In/Time-Out math, flags >16 hour shifts, and catches unparseable fields or missing names.
-- **Smart Queueing & Appending**: The orchestrator continuously scans the `input/` folder, skipping files that have already been mapped, appending new shifts directly into a centralized `merged_results.xlsx`.
+Designed to convert messy, handwritten PDF uploads into structured, validated Excel databases while benchmarking extraction quality across OCR-only, hybrid, and full VLM approaches.
 
 ---
 
 ## 🧠 System Architecture
 
-The pipeline seamlessly ingests raw scanned PDFs and dynamically routes them through one of the two dedicated extraction engines, rigorously validating output before dumping the records into an actionable billing or payroll queue.
-
 ```mermaid
 graph TD
     A[Upload Timesheet PDFs] --> B[Pipeline Orchestrator]
     B --> C[Preprocess & Deskew]
-    C --> D{config.yaml: extraction_mode?}
+    C --> D{extraction_mode}
     
-    %% Grid Path
-    D -->|ppocr_grid| E[Layout Zone Detection]
-    E --> F[Slice Page into Logical Row/Col Regions]
-    F --> G[Run Global PaddleOCR]
-    G --> H{Cell Confidence < 0.60 \n or Merged Handwriting?}
-    H -->|Yes| I[Crop Origin RGB Cell & Re-OCR]
-    H -->|Still Fails| J[Send Crop to Qwen2.5-VL via Ollama]
-    H -->|No Issues| K[Raw String Extraction]
-    I & J --> K
+    D -->|ocr_only| E1[PaddleOCR Grid Extraction]
+    E1 --> F1[Parse & Validate — No VLM]
     
-    %% VLM Path
-    D -->|vlm_full_page| L[Downsample & Base64 Encode]
-    L --> M[Pass Full Page to Qwen2.5-VL via Ollama]
-    M --> N[Extract Structured JSON Shifts]
+    D -->|ppocr_grid| E2[PaddleOCR Grid Extraction]
+    E2 --> F2{Cell Confidence Check}
+    F2 -->|Low| G2[VLM Fallback via Ollama]
+    F2 -->|OK| H2[Parse & Validate]
+    G2 --> H2
     
-    %% Unification
-    K & N --> O[Parse Time Values & Clean OCR Noise]
-    O --> P[Validation Engine]
+    D -->|vlm_full_page| E3[Full Page → VLM via Ollama]
+    E3 --> F3[Parse JSON Shifts & Validate]
     
-    P --> |Math Errors / Blanks| Q[Flag to Review Queue JSON]
-    P --> |Clean Shifts| R[Mark Accepted]
+    D -->|layout_guided_vlm_local| E4[PP-DocLayoutV3 Table Crop]
+    E4 --> F4[Local VLM via Ollama]
+    F4 --> G4[Parse JSON Shifts & Validate]
     
-    Q & R --> S[Aggregate to output/merged_results.xlsx]
+    D -->|layout_guided_vlm_cloud| E5[PP-DocLayoutV3 Table Crop]
+    E5 --> F5[Cloud VLM API Gemini]
+    F5 --> G5[Parse JSON Shifts & Validate]
+    
+    F1 & H2 & F3 & G4 & G5 --> I[Validation Engine]
+    I -->|Errors| J[Review Queue]
+    I -->|Clean| K[Accepted]
+    J & K --> L[Export: Excel + JSON + Benchmark]
 ```
 
 ---
 
-## 🔧 Two Extraction Modes
+## 🔬 5 Extraction Approaches
 
-The system was explicitly designed to handle multiple varieties of home-health forms through `config.yaml`. *(See the `workflows/` directory for detailed documentation on internal module logic for these modes).*
+| # | Approach | Mode | Description | Speed | Best For |
+|---|----------|------|-------------|-------|----------|
+| 1 | **OCR Only** | `ocr_only` | PaddleOCR grid extraction with zero VLM involvement. Empty cells stay empty. | ⚡⚡⚡ Fastest | Baseline comparison, printed forms |
+| 2 | **OCR + VLM Fallback** | `ppocr_grid` | PaddleOCR grid extraction with per-cell VLM fallback on low confidence. | ⚡⚡ Fast | Standardized forms, privacy-first |
+| 3 | **VLM Full Page** | `vlm_full_page` | Entire page sent to local VLM for structured JSON extraction. | ⚡ Slow | Messy layouts, cursive handwriting |
+| 4 | **Layout-Guided VLM (Local)** | `layout_guided_vlm_local` | PP-DocLayoutV3 detects table zone, crops it, sends to local VLM. | ⚡ Slow | Balance of accuracy + privacy |
+| 5 | **Layout-Guided VLM (Cloud)** | `layout_guided_vlm_cloud` | PP-DocLayoutV3 detects table zone, crops it, sends to cloud VLM (Gemini). | ⚡⚡ Moderate | Maximum accuracy, API available |
 
-### 1. The `vlm_full_page` Mode (Deep Contextual OCR)
-**Best for**: "Matrix" style timesheets, heavily cursive documents, or forms that do not strictly adhere to standard box boundaries.
+### Workflow Diagrams
 
-In this mode, the parameters inside the `config.yaml` layout section are completely ignored. The entire preprocessed page is passed to `qwen2.5vl:7b`. The model uses deep spatial reasoning to natively map distinct columns like 'Time In' and 'Total Hours' together, aggressively excluding hallucinated or blank fields based on prompt logic.
+Detailed Mermaid diagrams for each approach are in the [`workflows/`](workflows/) directory:
 
-*Pros*: Extremely robust against messy layouts and overlapping handwriting.
-*Cons*: Compute intensive; slower processing (~60-90 seconds per page).
+- [`workflows/ocr_only_flow.md`](workflows/ocr_only_flow.md)
+- [`workflows/ppocr_grid_flow.md`](workflows/ppocr_grid_flow.md)
+- [`workflows/vlm_full_page_flow.md`](workflows/vlm_full_page_flow.md)
+- [`workflows/layout_guided_vlm_local_flow.md`](workflows/layout_guided_vlm_local_flow.md)
+- [`workflows/layout_guided_vlm_cloud_flow.md`](workflows/layout_guided_vlm_cloud_flow.md)
 
-### 2. The `ppocr_grid` Mode (High-Speed Structured OCR)
-**Best for**: Standardized agency timesheets with distinct, uniform rectangular grid boundaries (e.g. "Skilled Record" templates).
+---
 
-In this mode, the pipeline deterministically slices the image into rows and columns using rigid coordinate mappings measured dynamically against the dimensions of the paper. It extracts text with `paddleocr`. If PaddleOCR struggles to read a messy cell natively, the pipeline dynamically crops the target area from the *original color image* (saving ink-pressure cues lost during standard binarization) and tries again.
+## 📊 Benchmark Results
 
-*Pros*: Blazing fast (~10-20 seconds per page).
-*Cons*: Relies heavily on accurate alignment mapping in `config.yaml`.
+Results from processing **C.Ferguson Timesheets** (2 pages, 7 expected shifts):
+
+| Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) |
+|--------|----------|-------------------|---------------|--------------------------|--------------------------|
+| **Processing Time (s)** | **70.0** | 107.1 | 436.5 | 429.1 | 85.0 |
+| **Rows Extracted** | 5 | 6 | 5 | 6 | 5 |
+| **Accepted Rows** | 0 | 1 | 2 | 3 | **5** |
+| **Flagged Rows** | 5 | 5 | 3 | 3 | **0** |
+| **Mean Confidence** | 0.883 | 0.873 | **0.900** | **0.900** | **0.900** |
+| **VLM Fallbacks** | **0** | 6 | 0 | 0 | 0 |
+| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 60.0% | 50.0% | **0.0%** |
+| **Field Missing Rate** | 100.0% | 83.3% | **0.0%** | **0.0%** | **0.0%** |
+| **Mean CER** | 0.342 | 0.398 | 0.400 | 0.233 | **0.200** |
+
+### Key Findings
+
+- **Layout-Guided VLM (Cloud)** achieves the highest quality: 100% acceptance rate, 0% field missing, lowest CER
+- **OCR Only** is the fastest but produces 0 accepted rows — handwritten text requires VLM assistance
+- **OCR + VLM Fallback** uses 6 VLM calls but still only accepts 1 of 6 rows — per-cell fallback is insufficient for heavily handwritten forms
+- **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference but produce reasonable results
+
+---
+
+## 💻 Quick Start
+
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) for Python dependency management
+- [Ollama](https://ollama.com/) running locally (for local VLM modes)
+- Google API key (for cloud VLM mode)
+
+```bash
+# Install dependencies
+uv sync
+
+# Pull the local VLM model (required for ppocr_grid, vlm_full_page, layout_guided_vlm_local)
+ollama pull qwen2.5vl:7b
+
+# Set up environment variables (for cloud VLM mode)
+cp .env.example .env
+# Edit .env and add your API keys
+```
+
+### Run the Pipeline
+
+```bash
+# Place PDFs/images in input/
+# Set extraction_mode in config.yaml
+uv run timesheet-ocr --verbose
+```
+
+### Run All 5 Approaches for Benchmarking
+
+```bash
+# 1. Set extraction_mode to each approach in config.yaml and run:
+#    ocr_only, ppocr_grid, vlm_full_page, layout_guided_vlm_local, layout_guided_vlm_cloud
+
+# 2. Generate combined comparison:
+python scripts/create_combined_results.py
+
+# Output: output/combined/benchmark_combined.xlsx
+```
+
+---
+
+## ⚙️ Configuration
+
+Key settings in `config.yaml`:
+
+```yaml
+extraction_mode: "ppocr_grid"   # ocr_only | ppocr_grid | vlm_full_page | layout_guided_vlm_local | layout_guided_vlm_cloud
+
+confidence:
+  accept_threshold: 0.90        # Accept OCR results above this confidence
+  fallback_threshold: 0.75      # Below this, flag for review
+
+layout:
+  transposed: true              # Timesheet has dates as columns
+  header_zone: [0.0, 0.0, 1.0, 0.16]
+  table_zone: [0.24, 0.16, 1.0, 0.98]
+
+ollama:
+  model: "qwen2.5vl:7b"         # Local VLM model
+  timeout_seconds: 60
+
+cloud_vlm:
+  provider: "google"
+  model: "gemini-3-flash-preview"
+```
+
+---
+
+## 📁 Output Structure
+
+```
+output/
+├── ocr_only/                    # Approach 1 results
+│   ├── benchmark_patient_a_week1.xlsx
+│   ├── merged_results.xlsx
+│   └── patient_a_week1_report.json
+├── ppocr_grid/                  # Approach 2 results
+├── vlm_full_page/               # Approach 3 results
+├── layout_guided_vlm_local/     # Approach 4 results
+├── layout_guided_vlm_cloud/     # Approach 5 results
+├── combined/                    # Combined benchmark across all approaches
+│   ├── benchmark_combined.xlsx  # Summary + row-level comparison
+│   ├── merged_combined.xlsx     # Row-level merged comparison
+│   └── debug/                   # Debug images from all approaches
+└── debug/                       # Shared debug images
+```
+
+Each approach directory contains:
+- `benchmark_*.xlsx` — Per-run benchmark with Run Summary, Page Details, and Row-Level sheets
+- `merged_results.xlsx` — Consolidated extraction results
+- `*_report.json` — Technical audit log
+- `*_review.json` — Flagged rows for human review
+
+---
+
+## 🔒 PHI/PII Anonymization
+
+The pipeline includes automatic PHI anonymization for benchmarking:
+
+- **Patient names** → `Patient_A`, `Patient_B`, `Patient_C` (deterministic, sorted by filename)
+- **Employee names** → `Employee_A`, `Employee_B`, etc.
+- **Filenames** → `patient_a_week1.pdf`, etc.
+- **Signature pages** — Detected and skipped (no row extraction, no visualization)
+
+All benchmark outputs use anonymized names. Original data remains in `output/{approach}/` directories.
 
 ---
 
 ## 📐 Adding Support for New Timesheet Templates
 
-By default, the `ppocr_grid` extracts coordinates based on the active constraints defined inside `config.yaml`. If you acquire timesheets from a brand new agency where the "Time In" or "Date" columns are slightly shifted, you **must update the layout fractions**.
-
-To remap for a new template:
-1. Provide a blank or sample PDF of the new timesheet.
-2. Run `debug_layout.py` on the sample. The pipeline will overlay grid boundaries on top of the physical PDF image and output visual files into the `output/` folder.
-3. Open the output debug image, and adjust the fractional `X, Y` coordinate boundaries in `config.yaml` to precisely encapsulate the target columns (e.g., ensuring `time_in:` perfectly boxes the "TIME IN" header and raw data).
-
-```yaml
-# Inside config.yaml -> layout -> columns
-# Example of shifting the 'TIME IN' block from 86.5% of the page down to 89.5%
-columns:
-  time_in: [0.865, 0.895] 
-  time_out: [0.895, 0.915]
-```
-
-> [!WARNING]
-> Remember: the `table_zone` must entirely encompass your defined `columns` ranges. If the label row throws off grid mapping, use `table_zone: [0.24, 0.16, 1.0, 0.95]` to adjust the `X-start` boundary, effectively skipping left-side column labels.
+1. Place a sample PDF in `input/`
+2. Enable debug visualization in `config.yaml`:
+   ```yaml
+   debug:
+     visualize_ocr: true
+   ```
+3. Run the pipeline and inspect debug images in `output/debug/`
+4. Adjust `layout:` zone fractions in `config.yaml` to match the new template's structure
+5. Verify extraction quality and iterate
 
 ---
 
-## 💻 Quick Start & Deployment
+## 📝 Changelog
 
-### 1. Prerequisites
-- [uv](https://docs.astral.sh/uv/) for Python dependency management.
-- [Ollama](https://ollama.com/) running locally.
-- Install the Vision model: `ollama run qwen2.5vl:7b` *(Ensure the tag exactly matches `config.yaml`)*
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
-### 2. Run the Pipeline
-Simply drop any PDFs or standard images into the `input/` folder and execute the overarching orchestrator:
+---
 
-```bash
-uv run timesheet-ocr --verbose
-```
+## 📄 License
 
-The pipeline will detect which files are new, process them sequentially, and construct outputs natively.
-
-### 3. Understanding Outputs
-Data gets continuously funneled into the `output/` directory:
-*   `merged_results.xlsx` — The consolidated "source of truth", formatting every processed shift (accepted and flagged) across all runs.
-*   `[file]_report.json` — A technical audit log capturing start times, page success counts, and extraction validations.
-*   `[file]_review.json` — A vital queue uniquely isolating every single row that was flagged due to mismatched calculation math, unrecognizable fields, or missing signatures, accelerating human intervention!
+MIT License — see [LICENSE](LICENSE) for details.
