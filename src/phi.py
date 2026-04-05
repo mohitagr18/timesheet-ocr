@@ -71,9 +71,9 @@ def _extract_patient_name(filename: str) -> str:
     """Extract patient name from filename.
 
     Examples:
-        "C.Ferguson Timesheets - 010726-011326.pdf" → "C.Ferguson"
-        "J.Flemming Timesheets - 012826-020326.pdf" → "J.Flemming"
-        "K.Drewry Timesheets 020426-021026.pdf" → "K.Drewry"
+        "<patient_1> Timesheets - 010726-011326.pdf" → "<patient_1>"
+        "<patient_2> Timesheets - 012826-020326.pdf" → "<patient_2>"
+        "<patient_3> Timesheets 020426-021026.pdf" → "<patient_3>"
     """
     # Try "Timesheet" split first
     if "Timesheet" in filename:

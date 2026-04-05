@@ -410,12 +410,12 @@ Deterministic mapping based on sorted filenames:
 
 | Original | Anonymized |
 |----------|------------|
-| C.Ferguson | Patient_A |
-| J.Flemming | Patient_B |
-| K.Drewry | Patient_C |
-| DAY: (employee) | Employee_A |
-| Skilled Record... (employee) | Employee_B |
-| C.Ferguson Timesheets - 010726-011326.pdf | patient_a_week1.pdf |
+| `<patient_1>` | Patient_A |
+| `<patient_2>` | Patient_B |
+| `<patient_3>` | Patient_C |
+| `<employee_1>` | Employee_A |
+| `<employee_2>` | Employee_B |
+| `<patient_1> Timesheets - 010726-011326.pdf` | patient_a_week1.pdf |
 
 ### 9.2 Applied To
 

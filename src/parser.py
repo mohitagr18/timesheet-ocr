@@ -337,12 +337,12 @@ def extract_week_dates(
     """Parse filename date range and generate consecutive week dates.
 
     Expected filename pattern: 'Name - MMDDYY-MMDDYY.pdf'
-    Example: 'J.Flemming Timesheets - 012826-020326.pdf'
+    Example: '<patient_2> Timesheets - 012826-020326.pdf'
         → start=2026-01-28, end=2026-02-03
         → returns [2026-01-28, 2026-01-29, ..., 2026-02-03]
 
     Args:
-        filename: Source filename (e.g., 'J.Flemming Timesheets - 012826-020326.pdf')
+        filename: Source filename (e.g., '<patient_2> Timesheets - 012826-020326.pdf')
         week_start_day: ISO weekday for expected start (0=Mon, 2=Wed, 6=Sun)
         week_length: Number of consecutive days to generate
 
@@ -379,8 +379,8 @@ def extract_expected_year(filename: str) -> int | None:
     """Extract the expected year from a timesheet filename.
 
     Handles common patterns:
-    - "J.Flemming Timesheets - 012826-020326.pdf" → 2026
-    - "C.Ferguson Timesheets - 010726-011326.pdf" → 2026
+    - "<patient_2> Timesheets - 012826-020326.pdf" → 2026
+    - "<patient_1> Timesheets - 010726-011326.pdf" → 2026
     - "Timesheet_2026-01-28.pdf" → 2026
     - "timesheet_01-28-2026.pdf" → 2026
     """

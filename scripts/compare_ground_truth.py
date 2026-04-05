@@ -394,41 +394,58 @@ def compute_metrics(all_approach_results):
         time_out_correct = sum(1 for r in approach_results if r["time_out_correct"])
         all_correct = sum(1 for r in approach_results if r["all_correct"])
 
-        # Precision: of rows marked "accepted", how many were actually correct?
+        # Classify rows for confusion matrix
         accepted = [
             r for r in approach_results if r["ext_status"].lower() == "accepted"
         ]
-        accepted_correct = sum(1 for r in accepted if r["all_correct"])
-        precision = accepted_correct / len(accepted) if accepted else 0.0
+        not_accepted = [
+            r for r in approach_results if r["ext_status"].lower() != "accepted"
+        ]
+        correct_rows = [r for r in approach_results if r["all_correct"]]
+
+        # True Positive: accepted AND correct
+        true_pos = sum(1 for r in accepted if r["all_correct"])
+
+        # True Negative: not accepted AND not correct
+        not_correct_rows = [r for r in approach_results if not r["all_correct"]]
+        true_neg = sum(1 for r in not_accepted if not r["all_correct"])
+
+        # False Positive: accepted but WRONG
+        false_pos = sum(1 for r in accepted if not r["all_correct"])
+
+        # False Negative: not accepted but CORRECT
+        false_neg = sum(1 for r in not_accepted if r["all_correct"])
+
+        # Precision: of rows marked "accepted", how many were actually correct?
+        precision = true_pos / len(accepted) if accepted else 0.0
 
         # Recall: of all correct rows, how many did the pipeline accept?
-        correct_rows = [r for r in approach_results if r["all_correct"]]
-        correct_accepted = sum(
-            1 for r in correct_rows if r["ext_status"].lower() == "accepted"
-        )
-        recall = correct_accepted / len(correct_rows) if correct_rows else 0.0
+        recall = true_pos / len(correct_rows) if correct_rows else 0.0
 
-        # F1
+        # F1 Score
         f1 = (
             2 * (precision * recall) / (precision + recall)
             if (precision + recall) > 0
             else 0.0
         )
 
-        # False positive: accepted but wrong
-        false_pos = sum(1 for r in accepted if not r["all_correct"])
-        fpr = false_pos / len(accepted) if accepted else 0.0
+        # False Positive Rate: of wrong rows, how many were incorrectly accepted?
+        fpr = false_pos / len(not_correct_rows) if not_correct_rows else 0.0
 
-        # False negative: not accepted but correct
-        not_accepted = [
-            r for r in approach_results if r["ext_status"].lower() != "accepted"
-        ]
-        false_neg = sum(1 for r in not_accepted if r["all_correct"])
+        # False Negative Rate: of correct rows, how many were incorrectly rejected?
         fnr = false_neg / len(correct_rows) if correct_rows else 0.0
+
+        # Accuracy: overall correct classification rate
+        accuracy = (true_pos + true_neg) / total if total > 0 else 0.0
 
         metrics[approach_id] = {
             "label": approach_label,
             "total_rows": total,
+            "true_positives": true_pos,
+            "true_negatives": true_neg,
+            "false_positives": false_pos,
+            "false_negatives": false_neg,
+            "accuracy": accuracy,
             "row_accuracy": all_correct / total,
             "hours_accuracy": hours_correct / total,
             "time_in_accuracy": time_in_correct / total,
@@ -458,20 +475,20 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
     ws.cell(row=row, column=1, value="Human-Verified Accuracy Results").font = Font(
         bold=True, size=14
     )
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
     row += 1
     ws.cell(
         row=row,
         column=1,
         value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ).font = Font(italic=True, size=10)
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
     row += 2
 
     # Section 1: Accuracy Metrics
     ws.cell(row=row, column=1, value="ACCURACY METRICS").font = Font(bold=True, size=12)
     ws.cell(row=row, column=1).fill = SECTION_FILL
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
     row += 1
 
     metric_headers = ["Metric"] + [m["label"] for m in metrics.values()]
@@ -489,11 +506,16 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
         ("Hours Accuracy (±0.25h)", lambda m: f"{m['hours_accuracy']:.1%}"),
         ("Time In Accuracy", lambda m: f"{m['time_in_accuracy']:.1%}"),
         ("Time Out Accuracy", lambda m: f"{m['time_out_accuracy']:.1%}"),
+        ("True Positives (TP)", lambda m: m["true_positives"]),
+        ("True Negatives (TN)", lambda m: m["true_negatives"]),
+        ("False Positives (FP)", lambda m: m["false_positives"]),
+        ("False Negatives (FN)", lambda m: m["false_negatives"]),
         ("Precision", lambda m: f"{m['precision']:.1%}"),
         ("Recall", lambda m: f"{m['recall']:.1%}"),
         ("F1 Score", lambda m: f"{m['f1_score']:.3f}"),
         ("False Positive Rate", lambda m: f"{m['false_positive_rate']:.1%}"),
         ("False Negative Rate", lambda m: f"{m['false_negative_rate']:.1%}"),
+        ("Accuracy", lambda m: f"{m['accuracy']:.1%}"),
     ]
 
     for label, getter in metric_rows:
@@ -512,7 +534,7 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
         bold=True, size=12
     )
     ws.cell(row=row, column=1).fill = SECTION_FILL
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
     row += 1
 
     detail_headers = ["Source File", "Date", "GT Hours"]
@@ -530,9 +552,9 @@ def write_human_verified_sheet(wb, metrics, all_approach_results, ground_truth):
 
     # Build filename → anonymized name mapping
     anon_map = {
-        "C.Ferguson Timesheets - 010726-011326.pdf": "patient_a_week1",
-        "J.Flemming Timesheets - 012826-020326.pdf": "patient_b_week2",
-        "K.Drewry Timesheets 020426-021026.pdf": "patient_c_week3",
+        "<patient_1> Timesheets - 010726-011326.pdf": "patient_a_week1",
+        "<patient_2> Timesheets - 012826-020326.pdf": "patient_b_week2",
+        "<patient_3> Timesheets 020426-021026.pdf": "patient_c_week3",
     }
 
     for gt_row in ground_truth:
@@ -625,9 +647,14 @@ def main():
     metric_labels = [
         ("Row Accuracy", lambda m: f"{m['row_accuracy']:.1%}"),
         ("Hours Accuracy (±0.25h)", lambda m: f"{m['hours_accuracy']:.1%}"),
+        ("True Positives (TP)", lambda m: str(m["true_positives"])),
+        ("True Negatives (TN)", lambda m: str(m["true_negatives"])),
+        ("False Positives (FP)", lambda m: str(m["false_positives"])),
+        ("False Negatives (FN)", lambda m: str(m["false_negatives"])),
         ("Precision", lambda m: f"{m['precision']:.1%}"),
         ("Recall", lambda m: f"{m['recall']:.1%}"),
         ("F1 Score", lambda m: f"{m['f1_score']:.3f}"),
+        ("Accuracy", lambda m: f"{m['accuracy']:.1%}"),
     ]
     for label, getter in metric_labels:
         print(f"{label:<30}", end="")

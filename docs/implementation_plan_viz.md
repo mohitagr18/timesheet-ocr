@@ -3,9 +3,9 @@
 ## 1. Bug Fix: Benchmark Accumulation
 
 **Problem:** `start_run()` in `benchmark.py` creates a new `RunMetrics` but doesn't reset `self.pages` and `self.rows`. Each file's data accumulates on top of previous files:
-- Ferguson: 2 pages → snapshot captures 2 ✅
-- Fleming: adds 2 more → `self.pages` has 4 → snapshot captures 4 ❌
-- Drewry: adds 4 more → `self.pages` has 8 → snapshot captures 8 ❌
+- `<patient_1>`: 2 pages → snapshot captures 2 ✅
+- `<patient_2>`: adds 2 more → `self.pages` has 4 → snapshot captures 4 ❌
+- `<patient_3>`: adds 4 more → `self.pages` has 8 → snapshot captures 8 ❌
 
 **Fix:** In `benchmark.py:122-136`, add resets:
 ```python
@@ -110,7 +110,7 @@ def render_page(
 output/debug/{filename}_page{N}.png
 ```
 
-Example: `output/debug/J.Flemming Timesheets - 012826-020326_page1.png`
+Example: `output/debug/<patient_2> Timesheets - 012826-020326_page1.png`
 
 ---
 
@@ -188,7 +188,7 @@ if getattr(self.config, "debug", None) and self.config.debug.visualize_ocr:
 5. Clean `output/` directory
 6. Run pipeline on all 3 files with `visualize_ocr: true`
 7. Verify:
-   - `output/benchmark_combined.xlsx` has correct per-file counts (Ferguson=2 pages, Fleming=2 pages, Drewry=4 pages)
+   - `output/benchmark_combined.xlsx` has correct per-file counts (`<patient_1>`=2 pages, `<patient_2>`=2 pages, `<patient_3>`=4 pages)
    - `output/debug/` contains annotated PNGs for all 8 pages
    - Each PNG shows OCR boxes (green/red), layout zones (blue), columns (orange), field bands (purple), VLM fallbacks (yellow with text)
 
@@ -247,14 +247,14 @@ signature_ocr_threshold: int = 100
 ```python
 class PhiAnonymizer:
     """Consistent PHI/PII anonymization across all outputs."""
-    
+
     def __init__(self, filenames: list[str]) -> None:
         # Deterministic: sort filenames alphabetically, map to Patient_A, Patient_B...
         # Extract patient name from filename (before "Timesheet")
         # Extract employee name from first occurrence in extraction results
-        self._patient_map: dict[str, str]   # "C.Ferguson" → "Patient_A"
-        self._employee_map: dict[str, str]  # "DAY:" → "Employee_A"
-        self._filename_map: dict[str, str]  # "C.Ferguson Timesheets..." → "patient_a_week1.pdf"
+        self._patient_map: dict[str, str]   # "<patient_1>" → "Patient_A"
+        self._employee_map: dict[str, str]  # "<employee_1>" → "Employee_A"
+        self._filename_map: dict[str, str]  # "<patient_1> Timesheets..." → "patient_a_week1.pdf"
     
     def anonymize_patient(self, name: str) -> str
     def anonymize_employee(self, name: str) -> str
@@ -266,9 +266,9 @@ class PhiAnonymizer:
 
 | Original Patient | Anonymized | Original Filename → |
 |---|---|---|
-| C.Ferguson | Patient_A | `patient_a_week1.pdf` |
-| J.Flemming | Patient_B | `patient_b_week2.pdf` |
-| K.Drewry | Patient_C | `patient_c_week3.pdf` |
+| `<patient_1>` | Patient_A | `patient_a_week1.pdf` |
+| `<patient_2>` | Patient_B | `patient_b_week2.pdf` |
+| `<patient_3>` | Patient_C | `patient_c_week3.pdf` |
 
 Employee names mapped similarly: first unique employee → Employee_A, second → Employee_B, etc.
 
@@ -293,7 +293,7 @@ if is_sig_page:
 ```
 
 **Expected impact:**
-- Eliminates ~21 garbage rows (Ferguson pg2: 7, Fleming pg2: 7, Drewry pg2+pg4: 7)
+- Eliminates ~21 garbage rows (`<patient_1>` pg2: 7, `<patient_2>` pg2: 7, `<patient_3>` pg2+pg4: 7)
 - Eliminates ~40 VLM fallbacks on blank signature pages
 - Dramatically improves acceptance rate and field missing rate
 
@@ -363,7 +363,7 @@ if is_sig_page:
 4. Update `src/exporter.py` — JSON toggles + Notes removal + anonymization
 5. Update `src/benchmark.py` — Notes removal + filename anonymization
 6. Update `src/debug_viz.py` — header redaction + signature page skip
-7. **TEST ON ONE FILE FIRST:** Run on Ferguson only, verify:
+7. **TEST ON ONE FILE FIRST:** Run on `<patient_1>` only, verify:
    - No PHI/PII in any output (patient names, employee names, filenames)
    - Signature page (page 2) skipped — no rows extracted, no visualization
    - Only grid page (page 1) visualized with header blacked out
@@ -525,9 +525,9 @@ The `export_combined` method will group runs by mode and create side-by-side col
 4. Create `src/vlm_debug_viz.py` → VLM visualization
 5. Update `src/pipeline.py` → VLM viz hook + metrics collection + mode tagging
 6. Update `src/benchmark.py` → VLM metrics + side-by-side combined columns
-7. **TEST ON FERGUSON ONLY:**
-   a. Clean `output/`, set `extraction_mode: "ppocr_grid"`, run on Ferguson
-   b. Clean `output/`, set `extraction_mode: "vlm_full_page"`, run on Ferguson
+7. **TEST ON `<PATIENT_1>` ONLY:**
+   a. Clean `output/`, set `extraction_mode: "ppocr_grid"`, run on `<patient_1>`
+   b. Clean `output/`, set `extraction_mode: "vlm_full_page"`, run on `<patient_1>`
    c. Verify combined benchmark has both `patient_a_ppocr` and `patient_a_vlm` columns
    d. Verify VLM debug image generated with text annotations
    e. Verify PHI anonymization on VLM debug image

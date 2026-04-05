@@ -5,7 +5,7 @@ Compares PP-OCRv5_mobile_det/rec vs PP-OCRv5_server_det/rec on the same images.
 Logs detection count, recognition quality, and per-zone accuracy metrics.
 
 Usage:
-    uv run python scripts/benchmark_models.py "input/J.Flemming Timesheets - 012826-020326.pdf"
+    uv run python scripts/benchmark_models.py "input/timesheet.pdf"
 
 Output:
     output/benchmark_results.json  — full metrics for both models
@@ -132,7 +132,7 @@ def main():
     pdf_path = (
         sys.argv[1]
         if len(sys.argv) > 1
-        else "input/J.Flemming Timesheets - 012826-020326.pdf"
+        else "input/timesheet.pdf"
     )
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():

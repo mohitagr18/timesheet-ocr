@@ -65,12 +65,13 @@ Detailed Mermaid diagrams for each approach are in the [`workflows/`](workflows/
 - [`workflows/vlm_full_page_flow.md`](workflows/vlm_full_page_flow.md)
 - [`workflows/layout_guided_vlm_local_flow.md`](workflows/layout_guided_vlm_local_flow.md)
 - [`workflows/layout_guided_vlm_cloud_flow.md`](workflows/layout_guided_vlm_cloud_flow.md)
+- [`workflows/ground_truth_comparison.md`](workflows/ground_truth_comparison.md) — Ground truth comparison workflow
 
 ---
 
 ## 📊 Benchmark Results
 
-Results from processing **C.Ferguson Timesheets** (2 pages, 7 expected shifts):
+Results from processing **Sample Timesheets** (2 pages, 7 expected shifts):
 
 | Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) |
 |--------|----------|-------------------|---------------|--------------------------|--------------------------|
@@ -90,6 +91,54 @@ Results from processing **C.Ferguson Timesheets** (2 pages, 7 expected shifts):
 - **OCR Only** is the fastest but produces 0 accepted rows — handwritten text requires VLM assistance
 - **OCR + VLM Fallback** uses 6 VLM calls but still only accepts 1 of 6 rows — per-cell fallback is insufficient for heavily handwritten forms
 - **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference but produce reasonable results
+
+---
+
+## 📏 Ground Truth Comparison & Confusion Matrix
+
+The pipeline includes a ground truth comparison workflow that evaluates extraction accuracy against manually-annotated reference data:
+
+### How It Works
+
+1. **Fill in ground truth**: Manually enter expected values in `output/ground_truth.xlsx`
+   - Columns: `source_file`, `date`, `total_hours`, `time_in`, `time_out`, `employee_name`
+2. **Run all 5 approaches**: Use `scripts/run_all_approaches.py` to generate benchmark data
+3. **Generate combined metrics**: Run `scripts/create_combined_results.py` to create `benchmark_combined.xlsx`
+4. **Compare against ground truth**: Run `scripts/compare_ground_truth.py` to evaluate accuracy
+
+### Confusion Matrix Metrics
+
+The comparison script computes a full confusion matrix for each approach:
+
+| Metric | Definition |
+|--------|------------|
+| **True Positives (TP)** | Rows accepted by pipeline AND correct vs ground truth |
+| **True Negatives (TN)** | Rows flagged/failed by pipeline AND actually incorrect |
+| **False Positives (FP)** | Rows accepted by pipeline BUT incorrect (bad acceptance) |
+| **False Negatives (FN)** | Rows flagged/failed by pipeline BUT actually correct (over-rejected) |
+
+### Derived Accuracy Metrics
+
+| Metric | Formula | Interpretation |
+|--------|---------|----------------|
+| **Precision** | TP / (TP + FP) | Of accepted rows, how many are correct? |
+| **Recall** | TP / (TP + FN) | Of correct rows, how many were accepted? |
+| **F1 Score** | 2 × (Precision × Recall) / (Precision + Recall) | Harmonic mean of precision and recall |
+| **False Positive Rate** | FP / (FP + TN) | Of wrong rows, how many were incorrectly accepted? |
+| **False Negative Rate** | FN / (TP + FN) | Of correct rows, how many were incorrectly rejected? |
+| **Accuracy** | (TP + TN) / Total | Overall correct classification rate |
+
+### Tolerance Thresholds
+
+- **Hours**: Within ±0.25 hours (15 minutes)
+- **Time In/Out**: Within ±30 minutes
+- **All fields must match** for a row to be considered correct
+
+### Output
+
+Results are written to the `Human-Verified Results` sheet in `output/combined/benchmark_combined.xlsx`:
+- **Section 1**: Accuracy Metrics table (TP, TN, FP, FN, Precision, Recall, F1, etc.)
+- **Section 2**: Per-Row Comparison (side-by-side hours and YES/NO correctness for all 5 approaches)
 
 ---
 
@@ -131,6 +180,12 @@ uv run timesheet-ocr --verbose
 python scripts/create_combined_results.py
 
 # Output: output/combined/benchmark_combined.xlsx
+
+# 3. (Optional) Fill in output/ground_truth.xlsx with expected values, then:
+python scripts/compare_ground_truth.py
+
+# This adds a 'Human-Verified Results' sheet to benchmark_combined.xlsx
+# with TP/TN/FP/FN counts, Precision, Recall, F1, and per-row comparisons.
 ```
 
 ---
@@ -174,8 +229,9 @@ output/
 ├── vlm_full_page/               # Approach 3 results
 ├── layout_guided_vlm_local/     # Approach 4 results
 ├── layout_guided_vlm_cloud/     # Approach 5 results
+├── ground_truth.xlsx            # Manually-filled reference data (git-ignored)
 ├── combined/                    # Combined benchmark across all approaches
-│   ├── benchmark_combined.xlsx  # Summary + row-level comparison
+│   ├── benchmark_combined.xlsx  # Summary + row-level + Human-Verified Results
 │   ├── merged_combined.xlsx     # Row-level merged comparison
 │   └── debug/                   # Debug images from all approaches
 └── debug/                       # Shared debug images
@@ -186,6 +242,13 @@ Each approach directory contains:
 - `merged_results.xlsx` — Consolidated extraction results
 - `*_report.json` — Technical audit log
 - `*_review.json` — Flagged rows for human review
+
+The `benchmark_combined.xlsx` file contains:
+- **Per-File Results** — Paper-ready summary table with metrics as rows, files as columns
+- **Page Details** — Per-page timing and detection statistics
+- **Row-Level** — Per-row raw/parsed values, confidence, sources, status
+- **Corrections** — Detailed log of every parser correction
+- **Human-Verified Results** — Ground truth comparison with TP/TN/FP/FN, Precision, Recall, F1, and per-row accuracy
 
 ---
 
