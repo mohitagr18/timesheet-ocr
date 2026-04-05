@@ -173,6 +173,85 @@ class VlmFallback:
             logger.error(f"VLM full page extraction failed: {e}")
             return {"shifts": [], "recipient_name": "", "rn_lpn_name": ""}
 
+    def extract_table_crop(self, image: np.ndarray) -> dict:
+        """Extract shifts from a cropped table image (no headers/signatures/footers).
+
+        Returns dict with 'shifts' list, same format as extract_full_page().
+        """
+        if not self._ensure_client():
+            return {"shifts": []}
+
+        prompt = self._build_table_crop_prompt()
+        img_b64 = self._image_to_base64(image)
+
+        try:
+            logger.info("Sending table crop to VLM. Processing...")
+            response = self._client.chat(
+                model=self.config.ollama.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [img_b64],
+                    }
+                ],
+                options={"temperature": 0.1},
+            )
+
+            reply = response["message"]["content"].strip()
+            logger.debug(f"VLM table crop response: {reply[:200]}...")
+            return self._parse_table_crop_response(reply)
+
+        except Exception as e:
+            logger.error(f"VLM table crop extraction failed: {e}")
+            return {"shifts": []}
+
+    def _build_table_crop_prompt(self) -> str:
+        """Build prompt optimized for cropped table images (no PHI context)."""
+        return (
+            "This image shows a handwritten timesheet grid. "
+            "Extract all shift entries as a JSON array.\n\n"
+            "Each row has: Date, Time In, Time Out, Total Hours.\n"
+            "Return ONLY a JSON object with this exact structure:\n"
+            "{\n"
+            '  "shifts": [\n'
+            '    {"date": "...", "time_in": "...", "time_out": "...", "total_hours": "..."}\n'
+            "  ]\n"
+            "}\n\n"
+            "If a field is missing or illegible, use an empty string.\n"
+            "CRITICAL: For times, strictly extract the exact text written on the page "
+            "(e.g., '8:00 AM', '4:30p', '10:30 PM'). Do NOT convert to 24-hour format.\n"
+            "CRITICAL: Only extract rows that contain visible, handwritten times. "
+            "If a row is blank, DO NOT include it.\n"
+            "Do not invent, guess, or sequentially generate dates or times."
+        )
+
+    def _parse_table_crop_response(self, reply: str) -> dict:
+        """Parse VLM response for table crop extraction."""
+        try:
+            data = self._extract_json(reply)
+            result = {"shifts": []}
+
+            shifts_data = data.get("shifts", [])
+            if not isinstance(shifts_data, list):
+                logger.warning("VLM table crop shifts is not a JSON array")
+                return result
+
+            for item in shifts_data:
+                if isinstance(item, dict):
+                    row = {}
+                    for key in ["date", "time_in", "time_out", "total_hours"]:
+                        row[key] = str(item.get(key, "")).strip()
+                    row["notes"] = ""
+
+                    if row.get("time_in") or row.get("time_out"):
+                        result["shifts"].append(row)
+
+            return result
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
+            logger.warning(f"VLM table crop response not valid JSON: {e}")
+            return {"shifts": []}
+
     def _build_cell_prompt(
         self, field_name: str, expected_year: int | None = None
     ) -> str:

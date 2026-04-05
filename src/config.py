@@ -71,6 +71,13 @@ class ExportConfig(BaseModel):
     include_report_json: bool = True
 
 
+class CloudVlmConfig(BaseModel):
+    provider: str = "google"
+    api_key_env: str = "GOOGLE_API_KEY"
+    model: str = "gemini-3-flash-preview"
+    timeout_seconds: int = 30
+
+
 class DebugConfig(BaseModel):
     visualize_ocr: bool = False
     output_dir: str = "output/debug"
@@ -83,11 +90,12 @@ class DebugConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    extraction_mode: str = "vlm_full_page"  # "ppocr_grid" or "vlm_full_page"
+    extraction_mode: str = "vlm_full_page"  # "ppocr_grid" | "vlm_full_page" | "ocr_only" | "layout_guided_vlm_local" | "layout_guided_vlm_cloud"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
     ppocr: PpocrConfig = Field(default_factory=PpocrConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    cloud_vlm: CloudVlmConfig = Field(default_factory=CloudVlmConfig)
     preprocessing: PreprocessingConfig = Field(default_factory=PreprocessingConfig)
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)

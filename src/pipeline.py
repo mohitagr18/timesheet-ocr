@@ -24,6 +24,7 @@ from .confidence import (
 from .debug_viz import VlmFallbackCell
 from .exporter import export_results
 from .layout import detect_layout
+from .layout_model import DocLayoutDetector
 from .models import (
     ExtractionResult,
     OcrSource,
@@ -46,6 +47,7 @@ from .preprocessing import load_image, pdf_to_images, preprocess_image
 from .review_queue import build_review_queue
 from .validation import validate_record
 from .vlm_fallback import VlmFallback
+from .vlm_cloud import CloudVlmExtractor
 
 if TYPE_CHECKING:
     from .config import AppConfig
@@ -63,6 +65,8 @@ class Pipeline:
         self.config = config
         self.ocr_engine = OcrEngine(config)
         self.vlm = VlmFallback(config)
+        self.layout_detector = DocLayoutDetector(config)
+        self.cloud_vlm = CloudVlmExtractor(config)
         self.benchmark = BenchmarkCollector()
         self._ocr_init_time = 0.0
 
@@ -416,6 +420,162 @@ class Pipeline:
                     valid_row_idx += 1
 
                 # VLM debug visualization (if enabled, grid pages only)
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                ):
+                    from . import vlm_debug_viz
+
+                    current_record = TimesheetRecord(
+                        source_file=anon_filename,
+                        page_number=page_number,
+                        employee_name=anonymizer.anonymize_employee(employee_name),
+                        employee_name_confidence=employee_conf,
+                        patient_name=anonymizer.anonymize_patient(patient_name),
+                        patient_name_confidence=patient_conf,
+                        rows=rows,
+                    )
+                    vlm_debug_viz.render_vlm_page(
+                        image=image,
+                        records=[current_record],
+                        page_number=page_number,
+                        source_file=anon_filename,
+                        output_dir=self.config.debug_output_path,
+                    )
+
+        elif getattr(self.config, "extraction_mode", "ppocr_grid") in (
+            "layout_guided_vlm_local",
+            "layout_guided_vlm_cloud",
+        ):
+            # Quick OCR pass for page classification (grid vs signature)
+            ocr_start = time_module.time()
+            if not self.ocr_engine._initialized:
+                init_start = time_module.time()
+                self.ocr_engine._ensure_initialized()
+                self._ocr_init_time = time_module.time() - init_start
+                page_metrics.ocr_init_time_s = self._ocr_init_time
+            ocr_result = self.ocr_engine.run(preprocessed)
+            page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
+            page_metrics.total_boxes_detected = len(ocr_result.boxes)
+
+            # Detect layout for zone coordinates
+            layout_start = time_module.time()
+            layout = detect_layout(image, self.config, ocr_result.boxes)
+            page_metrics.layout_detection_time_s = time_module.time() - layout_start
+
+            sig_threshold = self.config.debug.signature_ocr_threshold
+            is_sig_page = PhiAnonymizer.is_signature_page(
+                len(ocr_result.boxes), sig_threshold
+            )
+
+            if is_sig_page:
+                logger.info(
+                    f"Page {page_number} is a signature page ({len(ocr_result.boxes)} boxes < {sig_threshold} threshold). Skipping VLM extraction."
+                )
+                footer_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.footer_zone.x_start,
+                    layout.footer_zone.y_start,
+                    layout.footer_zone.x_end,
+                    layout.footer_zone.y_end,
+                )
+                if footer_boxes:
+                    sorted_footer = sorted(
+                        footer_boxes, key=lambda b: (b.y_center, b.x_center)
+                    )
+                    for box in sorted_footer:
+                        text = clean_name(box.text)
+                        if text and len(text) > 2:
+                            employee_name = text
+                            employee_conf = box.confidence
+                            break
+            else:
+                # Grid page: detect table with PP-DocLayoutV3, crop, send to VLM
+                doclayout_start = time_module.time()
+                table_zone = self.layout_detector.detect_table(image)
+                page_metrics.layout_detection_time_s = (
+                    time_module.time() - doclayout_start
+                )
+
+                if table_zone is not None:
+                    table_crop = table_zone.crop(image)
+                    logger.info(
+                        f"Page {page_number}: Table detected, cropping with "
+                        f"+{self.layout_detector.TABLE_PADDING}px padding"
+                    )
+                else:
+                    table_crop = image
+                    logger.warning(
+                        f"Page {page_number}: No table detected by PP-DocLayoutV3, "
+                        f"using full page"
+                    )
+
+                # VLM extraction on cropped table (local or cloud)
+                vlm_start = time_module.time()
+                if (
+                    getattr(self.config, "extraction_mode", "ppocr_grid")
+                    == "layout_guided_vlm_local"
+                ):
+                    vlm_results = self.vlm.extract_table_crop(table_crop)
+                else:
+                    vlm_results = self.cloud_vlm.extract_table_crop(table_crop)
+                page_metrics.vlm_inference_time_s = time_module.time() - vlm_start
+
+                employee_name = vlm_results.get("rn_lpn_name", "")
+                employee_conf = 0.9 if employee_name else 0.0
+
+                valid_row_idx = 0
+                shifts_data = vlm_results.get("shifts", [])
+                if len(shifts_data) > 7:
+                    logger.warning(
+                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                    )
+                    shifts_data = []
+
+                for row_data in shifts_data:
+                    date_text = row_data.get("date", "").strip()
+                    time_in_text = row_data.get("time_in", "").strip()
+                    time_out_text = row_data.get("time_out", "").strip()
+                    hours_text = row_data.get("total_hours", "").strip()
+
+                    def is_noise(val: str) -> bool:
+                        return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
+
+                    if (
+                        is_noise(time_in_text)
+                        and is_noise(time_out_text)
+                        and is_noise(hours_text)
+                    ):
+                        continue
+
+                    time_in_parsed, time_out_parsed = disambiguate_times(
+                        time_in_text, time_out_text, hours_text
+                    )
+
+                    rows.append(
+                        TimesheetRow(
+                            row_index=valid_row_idx,
+                            date_text=date_text,
+                            date_parsed=parse_date(date_text, expected_year),
+                            time_in_text=time_in_text,
+                            time_in_parsed=time_in_parsed,
+                            time_out_text=time_out_text,
+                            time_out_parsed=time_out_parsed,
+                            total_hours_text=hours_text,
+                            total_hours_parsed=parse_hours(hours_text),
+                            date_confidence=0.9,
+                            time_in_confidence=0.9,
+                            time_out_confidence=0.9,
+                            hours_confidence=0.9,
+                            date_source=OcrSource.VLM,
+                            time_in_source=OcrSource.VLM,
+                            time_out_source=OcrSource.VLM,
+                            hours_source=OcrSource.VLM,
+                        )
+                    )
+                    valid_row_idx += 1
+
+                # VLM debug visualization (if enabled)
                 if (
                     getattr(self.config, "debug", None)
                     and self.config.debug.visualize_ocr

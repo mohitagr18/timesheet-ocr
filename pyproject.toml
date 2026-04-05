@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "paddleocr>=3.0.0",
     "paddlepaddle>=3.0.0",
+    "paddlex>=3.0.0",
     "ollama>=0.4.0",
     "Pillow>=10.0.0",
     "opencv-python-headless>=4.8.0",
@@ -17,6 +18,7 @@ dependencies = [
     "openpyxl>=3.1.0",
     "PyYAML>=6.0",
     "pdf2image>=1.16.0",
+    "google-genai>=1.0.0",
 ]
 
 [project.scripts]

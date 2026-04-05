@@ -1,4 +1,4 @@
-extraction_mode: "vlm_full_page"   # 'ppocr_grid' (standard forms) or 'vlm_full_page' (complex matrix forms)
+extraction_mode: "vlm_full_page"   # 'ppocr_grid' | 'vlm_full_page' | 'ocr_only' | 'layout_guided_vlm_local' | 'layout_guided_vlm_cloud'
 
 # --- Input / Output ---
 paths:
@@ -66,3 +66,10 @@ debug:
   anonymize_phi: true
   signature_zone_fraction: 0.30
   signature_ocr_threshold: 100
+
+# --- Cloud VLM API (used by layout_guided_vlm_cloud mode) ---
+cloud_vlm:
+  provider: "google"
+  api_key_env: "GOOGLE_API_KEY"
+  model: "gemini-3-flash-preview"
+  timeout_seconds: 30
