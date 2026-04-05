@@ -1,67 +1,125 @@
+# =============================================================================
+# EXTRACTION MODE
+# =============================================================================
+# Controls how the pipeline extracts data from timesheets.
+#
+# Available modes:
+#
+# 1. vlm_full_page (Recommended for handwriting)
+#    - Sends the entire page to a local VLM (Ollama) without OCR
+#    - Best accuracy for messy handwritten timesheets
+#    - Slower but most robust extraction
+#    - Ignores layout zone config (grid-agnostic)
+#    - Requires: Ollama running with qwen2.5vl:7b model
+#
+# 2. ppocr_grid (Default fallback)
+#    - PaddleOCR grid extraction with per-cell VLM fallback
+#    - Cells below fallback_threshold trigger VLM re-extraction
+#    - Good balance of speed and accuracy
+#    - Generates detailed debug visualizations with VLM fallback annotations
+#    - Requires: Ollama running with qwen2.5vl:7b model
+#
+# 3. ocr_only (Fastest, lowest accuracy)
+#    - PaddleOCR grid extraction with zero VLM involvement
+#    - Empty cells stay empty, low confidence accepted as-is
+#    - Fastest approach but struggles with handwriting
+#    - No Ollama dependency
+#
+# 4. layout_guided_vlm_local
+#    - PP-DocLayoutV3 detects table zone, crops it, sends to local Ollama VLM
+#    - Quick OCR pass only for page classification (grid vs signature)
+#    - Better than full-page VLM but still local
+#    - Requires: Ollama running with qwen2.5vl:7b model
+#
+# 5. layout_guided_vlm_cloud
+#    - Same as layout_guided_vlm_local but uses cloud VLM (Google Gemini)
+#    - Requires: Google API key set via GOOGLE_API_KEY env var
+#    - Fastest VLM option (cloud inference)
+#    - See cloud_vlm section below for provider/model config
+#
 extraction_mode: vlm_full_page
+# =============================================================================
+# FILE PATHS
+# =============================================================================
 paths:
-  input_dir: input
-  output_dir: output
-  samples_dir: samples
+  input_dir: input        # Directory containing input PDFs/images
+  output_dir: output      # Directory for extracted results (Excel, JSON)
+  samples_dir: samples    # Reference sample images for comparison
+
+# =============================================================================
+# CONFIDENCE THRESHOLDS
+# =============================================================================
 confidence:
-  accept_threshold: 0.9
-  fallback_threshold: 0.75
+  accept_threshold: 0.9   # OCR confidence above this is accepted directly
+  fallback_threshold: 0.75 # Cells below this trigger VLM fallback (ppocr_grid mode)
 ppocr:
-  lang: en
-  use_textline_orientation: false
-  device: cpu
-  text_det_thresh: 0.45
-  text_rec_batch_size: 4
+  lang: en                    # PaddleOCR language code
+  use_textline_orientation: false # Enable for rotated text detection
+  device: cpu                 # "cpu" or "gpu"
+  text_det_thresh: 0.45       # Text detection sensitivity threshold
+  text_rec_batch_size: 4      # Batch size for text recognition
+
+# =============================================================================
+# LOCAL VLM (OLLAMA)
+# =============================================================================
+# Used by: vlm_full_page, ppocr_grid, layout_guided_vlm_local
 ollama:
-  host: http://localhost:11434
-  model: qwen2.5vl:7b
-  timeout_seconds: 60
-  max_retries: 2
+  host: http://localhost:11434 # Ollama server endpoint
+  model: qwen2.5vl:7b          # VLM model name
+  timeout_seconds: 60          # Max wait time per VLM request
+  max_retries: 2               # Number of retry attempts on failure
 preprocessing:
-  target_dpi: 400
-  denoise: true
-  deskew: false
-  binarize: false
-  adaptive_block_size: 15
-  adaptive_c: 3
+  target_dpi: 400                    # Target resolution for image preprocessing
+  denoise: true                      # Remove image noise
+  deskew: false                      # Correct page rotation/skew
+  binarize: false                    # Convert to black/white (can hurt handwriting)
+  adaptive_block_size: 15            # Adaptive thresholding block size
+  adaptive_c: 3                      # Adaptive thresholding constant
+
+# =============================================================================
+# LAYOUT DETECTION
+# =============================================================================
+# Defines normalized coordinate zones [x_min, y_min, x_max, y_max]
+# Used by: layout_guided_vlm_local, layout_guided_vlm_cloud
 layout:
-  transposed: true
-  header_zone:
-  - 0.0
-  - 0.0
-  - 1.0
-  - 0.16
-  table_zone:
-  - 0.24
-  - 0.16
-  - 1.0
-  - 0.98
-  footer_zone:
-  - 0.0
-  - 0.98
-  - 1.0
-  - 1.0
+  transposed: true  # Set true if timesheet table runs horizontally across pages
+  header_zone: [0.0, 0.0, 1.0, 0.16]     # Top region (metadata like employee name)
+  table_zone: [0.24, 0.16, 1.0, 0.98]     # Main data region (shifts, hours)
+  footer_zone: [0.0, 0.98, 1.0, 1.0]      # Bottom region (signatures, totals)
 validation:
-  max_shift_hours: 16
-  hours_mismatch_tolerance: 0.25
-  allow_future_dates: false
-  max_days_in_past: 365
-  week_start_day: 2
-  week_length: 7
+  max_shift_hours: 16           # Reject shifts longer than this (catches OCR errors)
+  hours_mismatch_tolerance: 0.25 # Allowed difference in total hours (in hours)
+  allow_future_dates: false      # Flag dates in the future as invalid
+  max_days_in_past: 365          # Flag dates older than this
+  week_start_day: 2              # Day of week for timesheet start (2=Monday, 1=Sunday)
+  week_length: 7                 # Number of days in the timesheet week
+
+# =============================================================================
+# EXPORT SETTINGS
+# =============================================================================
 export:
   formats:
-  - xlsx
-  excel_sheet_name: Timesheet Data
-  include_review_json: true
-  include_report_json: true
+  - xlsx                         # Output format(s): xlsx, csv, json
+  excel_sheet_name: Timesheet Data # Sheet name for Excel output
+  include_review_json: true      # Export items flagged for human review
+  include_report_json: true      # Export processing summary report
+
+# =============================================================================
+# DEBUG SETTINGS
+# =============================================================================
 debug:
-  visualize_ocr: false
-  output_dir: output/debug
-  anonymize_phi: true
-  signature_zone_fraction: 0.3
-  signature_ocr_threshold: 100
+  visualize_ocr: false           # Generate debug images with OCR annotations
+  output_dir: output/debug       # Directory for debug outputs
+  anonymize_phi: true            # Anonymize PHI/PII in debug images (HIPAA compliance)
+  signature_zone: 0.3            # Fraction of page bottom reserved for signature
+  signature_ocr_threshold: 100   # Threshold for signature detection
+# =============================================================================
+# CLOUD VLM SETTINGS
+# =============================================================================
+# Used by: layout_guided_vlm_cloud mode
+# Requires: API key set via the environment variable specified in api_key_env
 cloud_vlm:
-  provider: google
-  api_key_env: GOOGLE_API_KEY
-  model: gemini-3-flash-preview
-  timeout_seconds: 30
+  provider: google             # Cloud VLM provider: "google" (Gemini)
+  api_key_env: GOOGLE_API_KEY  # Environment variable holding the API key
+  model: gemini-3-flash-preview # Model name (Google Gemini)
+  timeout_seconds: 30          # Max wait time for cloud API response
