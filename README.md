@@ -94,7 +94,7 @@ Results from processing **Sample Timesheets** (2 pages, 7 expected shifts):
 
 ---
 
-## 📏 Ground Truth Comparison & Confusion Matrix
+## 📏 Ground Truth Comparison & Extraction Accuracy
 
 The pipeline includes a ground truth comparison workflow that evaluates extraction accuracy against manually-annotated reference data:
 
@@ -106,39 +106,45 @@ The pipeline includes a ground truth comparison workflow that evaluates extracti
 3. **Generate combined metrics**: Run `scripts/create_combined_results.py` to create `benchmark_combined.xlsx`
 4. **Compare against ground truth**: Run `scripts/compare_ground_truth.py` to evaluate accuracy
 
-### Confusion Matrix Metrics
+### Metrics Computed
 
-The comparison script computes a full confusion matrix for each approach:
+The comparison script computes two categories of metrics:
 
-| Metric | Definition |
-|--------|------------|
-| **True Positives (TP)** | Rows accepted by pipeline AND correct vs ground truth |
-| **True Negatives (TN)** | Rows flagged/failed by pipeline AND actually incorrect |
-| **False Positives (FP)** | Rows accepted by pipeline BUT incorrect (bad acceptance) |
-| **False Negatives (FN)** | Rows flagged/failed by pipeline BUT actually correct (over-rejected) |
+#### 1. Field-Level Accuracy
 
-### Derived Accuracy Metrics
+Each extracted row is evaluated against ground truth on a per-field basis:
 
-| Metric | Formula | Interpretation |
-|--------|---------|----------------|
-| **Precision** | TP / (TP + FP) | Of accepted rows, how many are correct? |
-| **Recall** | TP / (TP + FN) | Of correct rows, how many were accepted? |
-| **F1 Score** | 2 × (Precision × Recall) / (Precision + Recall) | Harmonic mean of precision and recall |
-| **False Positive Rate** | FP / (FP + TN) | Of wrong rows, how many were incorrectly accepted? |
-| **False Negative Rate** | FN / (TP + FN) | Of correct rows, how many were incorrectly rejected? |
-| **Accuracy** | (TP + TN) / Total | Overall correct classification rate |
+| Field | Tolerance | Definition |
+|-------|-----------|------------|
+| **Date** | Exact match | Parsed date must equal ground truth date |
+| **Hours** | ±0.25 hours (15 min) | Computed or extracted hours within tolerance |
+| **Time In** | ±30 minutes | Clock-in time within tolerance |
+| **Time Out** | ±30 minutes | Clock-out time within tolerance |
 
-### Tolerance Thresholds
+**Composite metrics:**
+- **Fully Correct**: All 3 time/hour fields match
+- **Partial or Full Match**: At least one field matches
+- **Not Extracted**: No matching row found in the approach's output
 
-- **Hours**: Within ±0.25 hours (15 minutes)
-- **Time In/Out**: Within ±30 minutes
-- **All fields must match** for a row to be considered correct
+#### 2. Pipeline Validation Quality
+
+Measures how well the pipeline's *internal* validation status (accepted/flagged/failed) correlates with *actual* correctness:
+
+| Metric | Definition | Ideal |
+|--------|------------|-------|
+| **Validation Precision** | Of rows marked "accepted", % that are fully correct | 100% |
+| **Validation Recall** | Of all fully correct rows, % that were accepted | 100% |
+| **Validation F1** | Harmonic mean of precision and recall | 1.000 |
+| **False Accept Rate** | Of accepted rows, % that are actually wrong | 0% |
+| **Missed Detection Rate** | Of correct rows, % that were flagged/failed | 0% |
 
 ### Output
 
-Results are written to the `Human-Verified Results` sheet in `output/combined/benchmark_combined.xlsx`:
-- **Section 1**: Accuracy Metrics table (TP, TN, FP, FN, Precision, Recall, F1, etc.)
-- **Section 2**: Per-Row Comparison (side-by-side hours and YES/NO correctness for all 5 approaches)
+Results are written to the `Human-Verified Results` sheet in `output/combined/benchmark_combined.xlsx` with three sections:
+
+- **Section 1**: Extraction Coverage & Field-Level Accuracy (per-field rates, fully correct counts)
+- **Section 2**: Pipeline Validation Quality (precision, recall, false accept rate)
+- **Section 3**: Per-Row Detailed Comparison (side-by-side hours, correctness checkmarks, and status for all 5 approaches)
 
 ---
 
@@ -185,7 +191,7 @@ python scripts/create_combined_results.py
 python scripts/compare_ground_truth.py
 
 # This adds a 'Human-Verified Results' sheet to benchmark_combined.xlsx
-# with TP/TN/FP/FN counts, Precision, Recall, F1, and per-row comparisons.
+# with field-level accuracy, validation quality, and per-row comparisons.
 ```
 
 ---
@@ -248,7 +254,10 @@ The `benchmark_combined.xlsx` file contains:
 - **Page Details** — Per-page timing and detection statistics
 - **Row-Level** — Per-row raw/parsed values, confidence, sources, status
 - **Corrections** — Detailed log of every parser correction
-- **Human-Verified Results** — Ground truth comparison with TP/TN/FP/FN, Precision, Recall, F1, and per-row accuracy
+- **Human-Verified Results** — Ground truth comparison with 3 sections:
+  - Extraction Coverage & Field-Level Accuracy (Date, Hours, Time In/Out rates)
+  - Pipeline Validation Quality (precision, recall, false accept rate)
+  - Per-Row Detailed Comparison (side-by-side values with ✓/✗ checkmarks)
 
 ---
 
