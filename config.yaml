@@ -1,32 +1,22 @@
-extraction_mode: "ocr_only"   # 'ppocr_grid' | 'vlm_full_page' | 'ocr_only' | 'layout_guided_vlm_local' | 'layout_guided_vlm_cloud'
-
-# --- Input / Output ---
+extraction_mode: vlm_full_page
 paths:
-  input_dir: "input"
-  output_dir: "output"
-  samples_dir: "samples"
-
-# --- OCR confidence thresholds ---
+  input_dir: input
+  output_dir: output
+  samples_dir: samples
 confidence:
-  accept_threshold: 0.90
+  accept_threshold: 0.9
   fallback_threshold: 0.75
-
-# --- PP-OCRv5 settings ---
 ppocr:
-  lang: "en"
+  lang: en
   use_textline_orientation: false
-  device: "cpu"
+  device: cpu
   text_det_thresh: 0.45
   text_rec_batch_size: 4
-
-# --- Qwen2.5-VL via Ollama ---
 ollama:
-  host: "http://localhost:11434"
-  model: "qwen2.5vl:7b"
+  host: http://localhost:11434
+  model: qwen2.5vl:7b
   timeout_seconds: 60
   max_retries: 2
-
-# --- Image preprocessing ---
 preprocessing:
   target_dpi: 400
   denoise: true
@@ -34,42 +24,44 @@ preprocessing:
   binarize: false
   adaptive_block_size: 15
   adaptive_c: 3
-
-# --- Layout detection rules ---
 layout:
   transposed: true
-  
-  header_zone: [0.0, 0.0, 1.0, 0.16]
-  table_zone: [0.24, 0.16, 1.0, 0.98]
-  footer_zone: [0.0, 0.98, 1.0, 1.0]
-
-# --- Validation rules ---
+  header_zone:
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.16
+  table_zone:
+  - 0.24
+  - 0.16
+  - 1.0
+  - 0.98
+  footer_zone:
+  - 0.0
+  - 0.98
+  - 1.0
+  - 1.0
 validation:
   max_shift_hours: 16
   hours_mismatch_tolerance: 0.25
   allow_future_dates: false
   max_days_in_past: 365
-  week_start_day: 2   # 0=Mon, 1=Tue, 2=Wed, ..., 6=Sun
+  week_start_day: 2
   week_length: 7
-
-# --- Export settings ---
 export:
-  formats: ["xlsx"]
-  excel_sheet_name: "Timesheet Data"
+  formats:
+  - xlsx
+  excel_sheet_name: Timesheet Data
   include_review_json: true
   include_report_json: true
-
-# --- Debug / Visualization ---
 debug:
-  visualize_ocr: true
-  output_dir: "output/debug"
+  visualize_ocr: false
+  output_dir: output/debug
   anonymize_phi: true
-  signature_zone_fraction: 0.30
+  signature_zone_fraction: 0.3
   signature_ocr_threshold: 100
-
-# --- Cloud VLM API (used by layout_guided_vlm_cloud mode) ---
 cloud_vlm:
-  provider: "google"
-  api_key_env: "GOOGLE_API_KEY"
-  model: "gemini-3-flash-preview"
+  provider: google
+  api_key_env: GOOGLE_API_KEY
+  model: gemini-3-flash-preview
   timeout_seconds: 30

@@ -67,11 +67,84 @@ def style_data_cell(ws, row, col, fill=None):
 
 
 def load_benchmark(folder):
-    """Load benchmark Excel from approach output directory."""
-    bench_files = glob.glob(f"output/{folder}/benchmark_*.xlsx")
+    """Load and aggregate all benchmark Excel files from approach output directory."""
+    bench_files = sorted(
+        f for f in glob.glob(f"output/{folder}/benchmark_*.xlsx") if "combined" not in f
+    )
     if not bench_files:
         return None
-    path = bench_files[0]
+
+    # Aggregate across all patient files
+    agg_summary = {}
+    all_pages = []
+    all_rows = []
+    total_time = 0.0
+
+    for path in bench_files:
+        wb = openpyxl.load_workbook(path)
+        summary = {}
+        for r in wb["Run Summary"].iter_rows(min_row=1, values_only=False):
+            key = r[0].value
+            val = r[1].value
+            if key:
+                summary[key] = val
+
+        pages = list(wb["Page Details"].iter_rows(min_row=2, values_only=True))
+        rows = list(wb["Row-Level"].iter_rows(min_row=2, values_only=True))
+
+        total_time += summary.get("Total Processing Time (s)", 0) or 0
+        all_pages.extend(pages)
+        all_rows.extend(rows)
+
+    # Build aggregated summary
+    agg_summary["Total Processing Time (s)"] = round(total_time, 2)
+    agg_summary["Number of Pages"] = len(all_pages)
+    agg_summary["Total Rows Extracted"] = len(all_rows)
+
+    # Sum integer metrics
+    for key in [
+        "Accepted Rows",
+        "Flagged Rows",
+        "Failed Rows",
+        "VLM Fallbacks Triggered",
+    ]:
+        agg_summary[key] = sum(
+            (s.get(key, 0) or 0)
+            for path in bench_files
+            for s in [_load_single_summary(path)]
+        )
+
+    # Average percentage metrics
+    for key in ["Hours Mismatch Rate", "Field Missing Rate"]:
+        vals = []
+        for path in bench_files:
+            s = _load_single_summary(path)
+            v = s.get(key)
+            if isinstance(v, str) and "%" in v:
+                vals.append(float(v.replace("%", "")))
+        if vals:
+            agg_summary[key] = f"{sum(vals) / len(vals):.1f}%"
+
+    # Average float metrics
+    for key in [
+        "Mean Overall Confidence",
+        "Min Overall Confidence",
+        "Mean Character Error Rate",
+    ]:
+        vals = [
+            s.get(key)
+            for path in bench_files
+            for s in [_load_single_summary(path)]
+            if isinstance(s.get(key), (int, float))
+        ]
+        if vals:
+            agg_summary[key] = round(sum(vals) / len(vals), 4)
+
+    return {"summary": agg_summary, "pages": all_pages, "rows": all_rows}
+
+
+def _load_single_summary(path):
+    """Load summary dict from a single benchmark file."""
     wb = openpyxl.load_workbook(path)
     summary = {}
     for r in wb["Run Summary"].iter_rows(min_row=1, values_only=False):
@@ -79,9 +152,7 @@ def load_benchmark(folder):
         val = r[1].value
         if key:
             summary[key] = val
-    pages = list(wb["Page Details"].iter_rows(min_row=2, values_only=True))
-    rows = list(wb["Row-Level"].iter_rows(min_row=2, values_only=True))
-    return {"summary": summary, "pages": pages, "rows": rows}
+    return summary
 
 
 def load_merged(folder):

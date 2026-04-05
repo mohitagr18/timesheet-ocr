@@ -212,6 +212,12 @@ input/
 # Output data (contains extracted PHI)
 output/
 
+# Ground truth (contains real names, PHI)
+output/ground_truth.xlsx
+
+# Name mapping DB (contains real names, PHI)
+output/name_mapping.db
+
 # Debug artifacts in repo root
 debug_*.png
 debug_*.txt

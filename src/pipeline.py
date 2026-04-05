@@ -69,6 +69,46 @@ class Pipeline:
         self.cloud_vlm = CloudVlmExtractor(config)
         self.benchmark = BenchmarkCollector()
         self._ocr_init_time = 0.0
+        self.name_db = None
+
+    def _init_name_mapping(
+        self, anonymizer: PhiAnonymizer, source_files: list[str]
+    ) -> None:
+        """Persist name mappings to local SQLite DB."""
+        from .name_mapping import NameMappingDB
+
+        output_dir = Path(self.config.output_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        db_path = output_dir / "name_mapping.db"
+        self.name_db = NameMappingDB(db_path)
+
+        for sf in source_files:
+            for real, anon_id in anonymizer._patient_map.items():
+                self.name_db.upsert_patient(anon_id, real, sf)
+            for real, anon_id in anonymizer._employee_map.items():
+                self.name_db.upsert_employee(anon_id, real, sf)
+
+    def cleanup(self) -> None:
+        """Release memory-heavy model instances to prevent OOM on long runs."""
+        import gc
+
+        logger.info("Releasing model instances from memory...")
+
+        if hasattr(self.ocr_engine, "_ocr"):
+            del self.ocr_engine._ocr
+            self.ocr_engine._initialized = False
+
+        if hasattr(self.layout_detector, "_model"):
+            del self.layout_detector._model
+            self.layout_detector._initialized = False
+
+        if hasattr(self.vlm, "_client"):
+            del self.vlm._client
+            self.vlm._initialized = False
+            self.vlm._available = None
+
+        gc.collect()
+        logger.info("Model instances released.")
 
     def process_file(
         self, file_path: str | Path, anonymizer: PhiAnonymizer | None = None
@@ -261,6 +301,9 @@ class Pipeline:
         # Create PHI anonymizer with all filenames for deterministic mapping
         filenames = [f.name for f in files]
         anonymizer = PhiAnonymizer(filenames)
+
+        # Persist name mappings to local SQLite DB
+        self._init_name_mapping(anonymizer, filenames)
 
         results = []
         for file_path in files:
