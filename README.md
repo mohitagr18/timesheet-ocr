@@ -100,11 +100,12 @@ The pipeline includes a ground truth comparison workflow that evaluates extracti
 
 ### How It Works
 
-1. **Fill in ground truth**: Manually enter expected values in `output/ground_truth.xlsx`
+1. **Fill in ground truth**: Manually enter expected values in `ground_truth.xlsx` (project root)
    - Columns: `source_file`, `date`, `total_hours`, `time_in`, `time_out`, `employee_name`
-2. **Run all 5 approaches**: Use `scripts/run_all_approaches.py` to generate benchmark data
-3. **Generate combined metrics**: Run `scripts/create_combined_results.py` to create `benchmark_combined.xlsx`
-4. **Compare against ground truth**: Run `scripts/compare_ground_truth.py` to evaluate accuracy
+2. **Run all 5 approaches**: Use `scripts/run_all_approaches_safe.py` to generate benchmark data
+3. **Automatic**: Combined metrics and ground truth comparison are generated automatically after all approaches complete:
+   - `output/combined/benchmark_combined.xlsx` — approach comparison + Human-Verified Results + Time Comparison
+   - `output/combined/consensus.xlsx` — KPI dashboard + per-row best-approach detail
 
 ### Metrics Computed
 
@@ -140,11 +141,13 @@ Measures how well the pipeline's *internal* validation status (accepted/flagged/
 
 ### Output
 
-Results are written to the `Human-Verified Results` sheet in `output/combined/benchmark_combined.xlsx` with three sections:
+Results are written to the `Human-Verified Results` sheet in `output/combined/benchmark_combined.xlsx` with these sections:
 
-- **Section 1**: Extraction Coverage & Field-Level Accuracy (per-field rates, fully correct counts)
+- **Section 1**: Extraction Coverage & Field-Level Accuracy (per-field rates, duplicate/hallucinated row counts, fully correct counts)
 - **Section 2**: Pipeline Validation Quality (precision, recall, false accept rate)
 - **Section 3**: Per-Row Detailed Comparison (side-by-side hours, correctness checkmarks, and status for all 5 approaches)
+- **Section 4**: Duplicate Rows (approach extracted same date but not best match — source timesheet had duplicates)
+- **Section 5**: Extra Rows (approach extracted dates not in ground truth — true hallucinations)
 
 ---
 
@@ -179,19 +182,16 @@ uv run timesheet-ocr --verbose
 ### Run All 5 Approaches for Benchmarking
 
 ```bash
-# 1. Set extraction_mode to each approach in config.yaml and run:
-#    ocr_only, ppocr_grid, vlm_full_page, layout_guided_vlm_local, layout_guided_vlm_cloud
+# Run all 5 approaches (uses config.yaml extraction_mode internally)
+uv run python scripts/run_all_approaches_safe.py
 
-# 2. Generate combined comparison:
-python scripts/create_combined_results.py
+# If interrupted, resume from last completed approach:
+uv run python scripts/run_all_approaches_safe.py --resume
 
-# Output: output/combined/benchmark_combined.xlsx
+# Output: output/combined/benchmark_combined.xlsx + output/combined/consensus.xlsx
 
-# 3. (Optional) Fill in output/ground_truth.xlsx with expected values, then:
-python scripts/compare_ground_truth.py
-
-# This adds a 'Human-Verified Results' sheet to benchmark_combined.xlsx
-# with field-level accuracy, validation quality, and per-row comparisons.
+# Optional: Fill in ground_truth.xlsx with expected values for accuracy evaluation, then re-run:
+# uv run python scripts/run_all_approaches_safe.py
 ```
 
 ---
@@ -235,12 +235,13 @@ output/
 ├── vlm_full_page/               # Approach 3 results
 ├── layout_guided_vlm_local/     # Approach 4 results
 ├── layout_guided_vlm_cloud/     # Approach 5 results
-├── ground_truth.xlsx            # Manually-filled reference data (git-ignored)
 ├── combined/                    # Combined benchmark across all approaches
-│   ├── benchmark_combined.xlsx  # Summary + row-level + Human-Verified Results
-│   ├── merged_combined.xlsx     # Row-level merged comparison
+│   ├── benchmark_combined.xlsx  # Summary + row-level + Human-Verified Results + Time Comparison
+│   ├── consensus.xlsx           # KPI dashboard + per-row best-approach detail
 │   └── debug/                   # Debug images from all approaches
 └── debug/                       # Shared debug images
+
+ground_truth.xlsx                # Manually-filled reference data (git-ignored, at project root)
 ```
 
 Each approach directory contains:
@@ -250,14 +251,16 @@ Each approach directory contains:
 - `*_review.json` — Flagged rows for human review
 
 The `benchmark_combined.xlsx` file contains:
-- **Per-File Results** — Paper-ready summary table with metrics as rows, files as columns
-- **Page Details** — Per-page timing and detection statistics
-- **Row-Level** — Per-row raw/parsed values, confidence, sources, status
-- **Corrections** — Detailed log of every parser correction
+- **Approach Comparison** — Summary metrics + row-level comparison across all approaches
 - **Human-Verified Results** — Ground truth comparison with 3 sections:
-  - Extraction Coverage & Field-Level Accuracy (Date, Hours, Time In/Out rates)
+  - Extraction Coverage & Field-Level Accuracy (Date, Hours, Time In/Out rates, plus duplicate and hallucinated row counts)
   - Pipeline Validation Quality (precision, recall, false accept rate)
   - Per-Row Detailed Comparison (side-by-side values with ✓/✗ checkmarks)
+- **Time Comparison** — Three tables: Time-In comparison, Time-Out comparison, and Correctness Summary
+
+The `consensus.xlsx` file contains:
+- **KPI Dashboard** — Per-approach accuracy (Hours ±0.25h, Time-In ±30min, Time-Out ±30min) plus "Best of 5" accuracy and approach win counts
+- **Per-Row Detail** — For each ground truth row, which approach had the closest hours and all 5 approaches' values side-by-side
 
 ---
 

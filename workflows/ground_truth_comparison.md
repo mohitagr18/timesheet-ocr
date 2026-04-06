@@ -46,7 +46,7 @@ graph TD
 
 ### 1. Prepare Ground Truth Data
 
-Create `output/ground_truth.xlsx` with the following columns:
+Create `ground_truth.xlsx` (at the project root, not inside `output/`) with the following columns:
 
 | Column | Description | Example |
 |--------|-------------|---------|
@@ -60,26 +60,19 @@ Create `output/ground_truth.xlsx` with the following columns:
 ### 2. Run All 5 Approaches
 
 ```bash
-python scripts/run_all_approaches.py
+uv run python scripts/run_all_approaches_safe.py
 ```
 
 This generates `benchmark_*.xlsx` files for each approach in their respective output directories.
 
-### 3. Generate Combined Benchmark
+### 3. Automatic: Combined & Ground Truth Comparison
 
-```bash
-python scripts/create_combined_results.py
-```
+After all 5 approaches complete, the runner automatically generates:
 
-This creates `output/combined/benchmark_combined.xlsx` with per-file results, page details, and row-level data.
+- `output/combined/benchmark_combined.xlsx` — includes Approach Comparison, Human-Verified Results, and Time Comparison sheets
+- `output/combined/consensus.xlsx` — KPI dashboard with per-approach accuracy (Hours, Time-In, Time-Out) and "Best of 5" metrics
 
-### 4. Compare Against Ground Truth
-
-```bash
-uv run python scripts/compare_ground_truth.py
-```
-
-This adds a **Human-Verified Results** sheet to `benchmark_combined.xlsx`.
+The ground truth comparison is integrated into step 3 — no separate script is needed. If ground truth is not filled, the comparison is skipped gracefully.
 
 ## Accuracy Metrics
 
@@ -155,6 +148,9 @@ The `Human-Verified Results` sheet in `benchmark_combined.xlsx` contains three s
 
 | File | Purpose |
 |------|---------|
-| `output/ground_truth.xlsx` | Manual ground truth data (user-filled, git-ignored) |
-| `scripts/compare_ground_truth.py` | Comparison script (field-level accuracy + validation quality) |
-| `output/combined/benchmark_combined.xlsx` | Output with Human-Verified Results sheet |
+| `ground_truth.xlsx` (project root) | Manual ground truth data (user-filled, git-ignored) |
+| `scripts/create_combined_results.py` | Combined metrics + ground truth comparison (runs automatically) |
+| `scripts/create_consensus_results.py` | KPI dashboard + per-approach accuracy (runs automatically) |
+| `scripts/run_all_approaches_safe.py` | Batch runner that orchestrates everything |
+| `output/combined/benchmark_combined.xlsx` | Output with Human-Verified Results + Time Comparison sheets |
+| `output/combined/consensus.xlsx` | KPI dashboard with "Best of 5" accuracy |
