@@ -51,10 +51,10 @@ def export_results(result: ExtractionResult, config: AppConfig) -> list[Path]:
         _export_review_queue(result, review_path)
         created_files.append(review_path)
 
-    # Always export validation report if toggle is on
+    # Always export validation report (append to cumulative report)
     if config.export.include_report_json:
         report_path = output_dir / f"{stem}_report.json"
-        _export_report(result, report_path)
+        _export_report_cumulative(result, report_path)
         created_files.append(report_path)
 
     logger.info(f"Exported {len(created_files)} files to {output_dir}")
@@ -346,3 +346,76 @@ def _export_report(result: ExtractionResult, path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
     logger.info(f"Report exported: {path}")
+
+
+def _export_report_cumulative(result: ExtractionResult, path: Path) -> None:
+    """Export validation summary report, appending to existing cumulative data."""
+    # Load existing report if it exists
+    existing_data = None
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            existing_data = None
+
+    # Collect all validation warnings for this file
+    all_warnings = []
+    for record in result.records:
+        for row in record.rows:
+            for error in row.validation_errors:
+                all_warnings.append(
+                    {
+                        "source_file": result.source_file,
+                        "page": record.page_number,
+                        "row": row.row_index,
+                        "rule": error,
+                        "detail": f"[{result.source_file}] Row {row.row_index}: {error}",
+                    }
+                )
+
+    # Build new report
+    new_data = {
+        "source_file": result.source_file,
+        "processing_time_seconds": round(result.processing_time_seconds, 2),
+        "total_pages": result.total_pages,
+        "total_rows_detected": result.total_rows,
+        "accepted": result.accepted_count,
+        "flagged_for_review": result.flagged_count,
+        "failed": result.failed_count,
+        "validation_warnings": all_warnings,
+    }
+
+    # If this is a multi-file run, add to cumulative stats
+    if existing_data and "files" in existing_data:
+        # Append to cumulative
+        existing_data["files"].append(new_data)
+        # Update totals
+        existing_data["total_files"] = len(existing_data["files"])
+        existing_data["total_rows_all_files"] = sum(
+            f["total_rows_detected"] for f in existing_data["files"]
+        )
+        existing_data["total_accepted"] = sum(f["accepted"] for f in existing_data["files"])
+        existing_data["total_flagged"] = sum(f["flagged_for_review"] for f in existing_data["files"])
+        existing_data["total_failed"] = sum(f["failed"] for f in existing_data["files"])
+        existing_data["total_processing_time"] = round(
+            sum(f["processing_time_seconds"] for f in existing_data["files"]), 2
+        )
+        # Add this file's report
+        output_data = existing_data
+    else:
+        # First file or no existing data - create cumulative structure
+        output_data = {
+            "total_files": 1,
+            "total_rows_all_files": result.total_rows,
+            "total_accepted": result.accepted_count,
+            "total_flagged": result.flagged_count,
+            "total_failed": result.failed_count,
+            "total_processing_time": round(result.processing_time_seconds, 2),
+            "files": [new_data],
+            "last_updated": datetime.now().isoformat(),
+        }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, default=str)
+    logger.info(f"Report exported (cumulative): {path}")

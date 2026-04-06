@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 MAX_DIM = 2048
 DEFAULT_MAX_WORKERS = 3
 
+# Media resolution mapping for Gemini API
+MEDIA_RESOLUTION_MAP = {
+    "low": "MEDIA_RESOLUTION_LOW",
+    "medium": "MEDIA_RESOLUTION_MEDIUM",
+    "high": "MEDIA_RESOLUTION_HIGH",
+    "ultra_high": "MEDIA_RESOLUTION_ULTRA_HIGH",
+}
+
 
 def _load_dotenv() -> None:
     """Load .env file from project root if python-dotenv is available."""
@@ -115,12 +123,19 @@ class CloudVlmExtractor:
                 mime_type="image/jpeg",
             )
 
+            # Set media resolution for better accuracy
+            resolution_str = getattr(self.config.cloud_vlm, "media_resolution", "high")
+            media_resolution = types.MediaResolution(
+                MEDIA_RESOLUTION_MAP.get(resolution_str, "MEDIA_RESOLUTION_HIGH")
+            )
+
             response = self._client.models.generate_content(
                 model=self.config.cloud_vlm.model,
                 contents=[prompt, image_part],
                 config={
                     "temperature": 0.1,
                     "response_mime_type": "application/json",
+                    "media_resolution": media_resolution,
                 },
             )
 
@@ -247,11 +262,26 @@ class CloudVlmExtractor:
             raise
 
     def _image_to_bytes(self, image: np.ndarray) -> bytes:
-        """Convert numpy array to JPEG bytes."""
+        """Convert numpy array to JPEG bytes.
+        
+        For cloud VLM, we prefer color images with higher quality
+        to maximize handwriting recognition accuracy.
+        """
+        # Get configurable JPEG quality
+        quality = getattr(self.config.cloud_vlm, "image_quality", 92)
+        
+        # Check if we should preserve color or convert to grayscale
+        use_color = getattr(self.config.cloud_vlm, "use_color_images", True)
+        
         if len(image.shape) == 2:
+            # Grayscale input - convert to BGR for consistency
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         elif len(image.shape) == 3 and image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        elif len(image.shape) == 3 and not use_color:
+            # Convert color to grayscale if configured
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
         h, w = image.shape[:2]
         if max(h, w) > MAX_DIM:
@@ -260,5 +290,5 @@ class CloudVlmExtractor:
             new_h = int(h * scale)
             image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        _, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        _, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
         return buf.tobytes()

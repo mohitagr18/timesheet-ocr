@@ -1,4 +1,4 @@
-extraction_mode: vlm_full_page
+extraction_mode: layout_guided_vlm_cloud
 paths:
   input_dir: input
   output_dir: output
@@ -65,4 +65,8 @@ cloud_vlm:
   api_key_env: GOOGLE_API_KEY
   model: gemini-3-flash-preview
   timeout_seconds: 30
-  parallel_workers: 3
+  parallel_workers: 2
+  media_resolution: high
+  image_quality: 92
+  use_color_images: true
+  inter_file_delay: 5

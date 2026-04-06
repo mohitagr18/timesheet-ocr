@@ -134,9 +134,7 @@ class Pipeline:
         # Determine anonymized filename
         patient_name = file_path.name.split("Timesheet")[0].strip(" -_")
         patient_name = anonymizer.anonymize_patient(patient_name)
-        anon_base = phi_module.PhiAnonymizer._anonymize_filename(
-            file_path.name, patient_name
-        )
+        anon_base = anonymizer.anonymize_filename(file_path.name)
 
         # 1. Load all pages
         images = self._load_file(file_path)
@@ -150,7 +148,7 @@ class Pipeline:
             page_metrics = PageMetrics(source_file=anon_filename, page_number=page_number)
             logger.info(f"\n--- Page {page_number}/{n_pages} (OCR + layout) ---")
 
-            # Preprocess
+            # Preprocess for OCR (grayscale, denoised, etc.)
             preprocessed = preprocess_image(image, self.config)
 
             # OCR for page classification
@@ -164,7 +162,7 @@ class Pipeline:
             page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
             page_metrics.total_boxes_detected = len(ocr_result.boxes)
 
-            # Layout detection
+            # Layout detection (use original color image for better accuracy)
             layout_start = time_module.time()
             layout = detect_layout(image, self.config, ocr_result.boxes)
             page_metrics.layout_detection_time_s = time_module.time() - layout_start
@@ -183,12 +181,14 @@ class Pipeline:
                     time_module.time() - doclayout_start
                 )
                 if table_zone is not None:
+                    # Keep table crop in original color for better VLM accuracy
                     table_crop = table_zone.crop(image)
                     logger.info(
                         f"Page {page_number}: Table detected, "
                         f"crop {table_crop.shape[1]}x{table_crop.shape[0]}"
                     )
                 else:
+                    # Use full color image
                     table_crop = image
                     logger.warning(
                         f"Page {page_number}: No table detected, using full page"
@@ -217,6 +217,13 @@ class Pipeline:
                 vlm_results_item = vlm_results[result_idx]
                 page_metrics.vlm_inference_time_s = vlm_batch_elapsed / len(grid_crops)
                 page_data[data_idx] = (img, preprocessed, ocr_result, layout, is_sig, vlm_results_item, page_metrics)
+            
+            # Free memory: release large image crops after VLM extraction
+            del grid_crops
+            del vlm_results
+            import gc
+            gc.collect()
+            logger.debug("Released VLM image crops from memory")
         else:
             logger.warning("No grid pages found — no VLM extraction needed")
 
@@ -334,24 +341,48 @@ class Pipeline:
                 r.patient_name = best_pat.patient_name
                 r.patient_name_confidence = best_pat.patient_name_confidence
 
-        # 5. Parse, validate, export
-        parser = TimesheetParser(self.config)
-        parse_start = time_module.time()
-        parser.parse_records(records)
-        page_metrics_total_parse_time = time_module.time() - parse_start
+        # Collect row-level benchmark metrics
+        for record in records:
+            for row in record.rows:
+                self._collect_row_metrics(row, record)
 
-        validation_start = time_module.time()
-        validation_result = self.validate_records(records)
-        page_metrics_total_val_time = time_module.time() - validation_start
-
-        export_start = time_module.time()
-        self.export_results(records, anon_filename, anonymizer)
-        page_metrics_total_export_time = time_module.time() - export_start
-
+        # 5. Build result
         total_elapsed = time_module.time() - start_time
-        self.benchmark.finish_run(total_elapsed)
+        result = ExtractionResult(
+            source_file=anon_filename,
+            processing_time_seconds=total_elapsed,
+            total_pages=n_pages,
+            records=records,
+        )
 
-        return self.benchmark.finalize(records, total_elapsed)
+        # 6. Build review queue
+        result.review_items = build_review_queue(result, self.config)
+
+        # 7. Export
+        output_files = export_results(result, self.config)
+
+        # 8. Benchmark
+        self.benchmark.finalize(total_elapsed)
+        self.benchmark.run.image_dimensions = (
+            f"{self.benchmark.pages[0].image_width}x{self.benchmark.pages[0].image_height}"
+            if self.benchmark.pages
+            else ""
+        )
+        bench_file = self.benchmark.export(self.config.output_path)
+        output_files.append(bench_file)
+
+        # Summary
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"DONE: {file_path.name}")
+        logger.info(f"  Pages: {result.total_pages}")
+        logger.info(
+            f"  Rows:  {result.total_rows} (accepted={result.accepted_count}, flagged={result.flagged_count}, failed={result.failed_count})"
+        )
+        logger.info(f"  Time:  {total_elapsed:.1f}s")
+        logger.info(f"  Files: {[f.name for f in output_files]}")
+        logger.info(f"{'=' * 60}")
+
+        return result
 
     def process_file(
         self, file_path: str | Path, anonymizer: PhiAnonymizer | None = None

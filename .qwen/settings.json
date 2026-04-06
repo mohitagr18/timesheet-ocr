@@ -7,7 +7,12 @@
       "Bash(uv *)",
       "Bash(tee *)",
       "Bash(cat *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(timeout *)",
+      "WebSearch",
+      "WebFetch(ai.google.dev)",
+      "Bash(ls *)",
+      "WebFetch(help.apiyi.com)"
     ]
   },
   "$version": 3
