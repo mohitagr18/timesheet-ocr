@@ -1,4 +1,4 @@
-extraction_mode: layout_guided_vlm_cloud
+extraction_mode: ocr_only
 paths:
   input_dir: input
   output_dir: output
@@ -68,3 +68,4 @@ cloud_vlm:
   media_resolution: high
   image_quality: 92
   use_color_images: true
+  inter_file_delay: 5

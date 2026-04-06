@@ -306,7 +306,7 @@ class Pipeline:
         self._init_name_mapping(anonymizer, filenames)
 
         results = []
-        for file_path in files:
+        for file_idx, file_path in enumerate(files):
             if file_path.name in processed_files:
                 logger.info(
                     f"Skipping {file_path.name}: already processed and in Excel."
@@ -318,6 +318,20 @@ class Pipeline:
                 results.append(result)
             except Exception as e:
                 logger.error(f"Failed to process {file_path.name}: {e}", exc_info=True)
+
+            # Memory cleanup between files to prevent OOM on large batches
+            import gc
+            collected = gc.collect()
+            logger.debug(f"GC between files: {collected} objects collected")
+
+            # Rate-limit delay for cloud approach (not counted in per-file timing
+            # since process_file() already captured processing_time_seconds)
+            extraction_mode = getattr(self.config, "extraction_mode", "")
+            if extraction_mode == "layout_guided_vlm_cloud" and file_idx < len(files) - 1:
+                delay = getattr(self.config.cloud_vlm, "inter_file_delay", 5)
+                if delay > 0:
+                    logger.info(f"⏳ Rate-limit delay: {delay}s before next file...")
+                    time_module.sleep(delay)
 
         # Export combined benchmark across all files
         if results and len(self.benchmark._runs) > 1:

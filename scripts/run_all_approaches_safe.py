@@ -36,8 +36,8 @@ STATE_FILE = OUTPUT_DIR / ".run_state.json"
 
 APPROACHES = [
     ("ocr_only", "OCR Only (Baseline)"),
-    ("ppocr_grid", "OCR + VLM Fallback"),
-    ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),
+    # ("ppocr_grid", "OCR + VLM Fallback"),  # SLOW: local Ollama per-field calls
+    # ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),  # SLOW: local Ollama
     ("layout_guided_vlm_cloud", "Layout-Guided VLM (Cloud)"),
     ("vlm_full_page", "VLM Full Page"),
 ]
@@ -218,6 +218,7 @@ def run_approach(approach_id, approach_label, input_files, logger):
                     "accepted": r.accepted_count,
                     "flagged": r.flagged_count,
                     "failed": r.failed_count,
+                    "status": "success",
                 }
             )
 
@@ -233,6 +234,19 @@ def run_approach(approach_id, approach_label, input_files, logger):
                 "traceback": traceback.format_exc()
             }
         )
+        # Mark all input files as failed for this approach
+        for f in input_files:
+            results.append(
+                {
+                    "file": f.name,
+                    "rows": 0,
+                    "accepted": 0,
+                    "flagged": 0,
+                    "failed": 0,
+                    "status": "failed",
+                    "error": str(e),
+                }
+            )
 
     # Move outputs to approach directory
     move_outputs_to_approach_dir(approach_id)
@@ -317,9 +331,11 @@ def print_summary(all_results, all_errors, total_start, logger):
             logger.info(f"  Failed:          {total_failed}")
 
             for r in results:
+                status_icon = "✓" if r.get("status") == "success" else "✗"
                 logger.info(
-                    f"    {r['file']}: {r['rows']} rows "
+                    f"    {status_icon} {r['file']}: {r['rows']} rows "
                     f"({r['accepted']} accepted, {r['flagged']} flagged)"
+                    + (f" — ERROR: {r['error']}" if r.get("error") else "")
                 )
 
         if errors:
@@ -444,8 +460,13 @@ def main():
             approach_label = dict(APPROACHES)[approach_id]
             results = all_results.get(approach_id, [])
             if results:
+                success_count = sum(1 for r in results if r.get("status") == "success")
+                failed_count = sum(1 for r in results if r.get("status") == "failed")
                 total_rows = sum(r["rows"] for r in results)
-                logger.info(f"  ✓ {approach_label}: {total_rows} rows extracted")
+                logger.info(
+                    f"  ✓ {approach_label}: {total_rows} rows extracted "
+                    f"({success_count} files ok, {failed_count} failed)"
+                )
 
 
 if __name__ == "__main__":
