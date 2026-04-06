@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import subprocess
+import sys
 import time as time_module
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -305,6 +309,10 @@ class Pipeline:
         # Persist name mappings to local SQLite DB
         self._init_name_mapping(anonymizer, filenames)
 
+        # Create temp directory for subprocess results
+        tmp_dir = self.config.output_path / ".tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
         results = []
         for file_idx, file_path in enumerate(files):
             if file_path.name in processed_files:
@@ -313,25 +321,67 @@ class Pipeline:
                 )
                 continue
 
+            file_start = time_module.time()
             try:
-                result = self.process_file(file_path, anonymizer)
-                results.append(result)
+                # Spawn subprocess to process this file in isolation
+                # This ensures PaddleOCR memory is fully released after each file
+                cmd = [
+                    sys.executable, "-m", "src.process_single",
+                    str(file_path),
+                    str(self.config.output_path),
+                ]
+                # Pass config path if it's not the default
+                config_file = Path("config.yaml")
+                if config_file.exists():
+                    cmd.append(str(config_file))
+
+                # Pass all filenames for consistent anonymization mapping
+                cmd.extend(["--filenames", json.dumps(filenames)])
+
+                logger.info(f"▶ Processing {file_path.name} (subprocess #{file_idx + 1})...")
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,  # 10 min timeout per file
+                )
+
+                # Read result from temp JSON
+                result_file = tmp_dir / f"{file_path.stem}.result.json"
+                error_file = tmp_dir / f"{file_path.stem}.error.json"
+
+                if proc.returncode == 0 and result_file.exists():
+                    result_data = json.loads(result_file.read_text())
+                    # Reconstruct a minimal ExtractionResult-like dict
+                    # (Full records are already exported by the subprocess)
+                    results.append(result_data)
+                    logger.info(
+                        f"✓ {file_path.name}: {result_data['total_rows']} rows "
+                        f"in {result_data['processing_time_seconds']:.1f}s"
+                    )
+                else:
+                    error_msg = proc.stderr.strip()
+                    if error_file.exists():
+                        error_data = json.loads(error_file.read_text())
+                        error_msg = error_data.get("error", proc.stderr)
+                    logger.error(f"✗ {file_path.name}: {error_msg}")
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"✗ {file_path.name}: Timed out after 10 minutes")
             except Exception as e:
-                logger.error(f"Failed to process {file_path.name}: {e}", exc_info=True)
+                logger.error(f"✗ {file_path.name}: {e}", exc_info=True)
 
-            # Memory cleanup between files to prevent OOM on large batches
-            import gc
-            collected = gc.collect()
-            logger.debug(f"GC between files: {collected} objects collected")
-
-            # Rate-limit delay for cloud approach (not counted in per-file timing
-            # since process_file() already captured processing_time_seconds)
+            # Rate-limit delay for cloud approach
             extraction_mode = getattr(self.config, "extraction_mode", "")
             if extraction_mode == "layout_guided_vlm_cloud" and file_idx < len(files) - 1:
                 delay = getattr(self.config.cloud_vlm, "inter_file_delay", 5)
                 if delay > 0:
                     logger.info(f"⏳ Rate-limit delay: {delay}s before next file...")
                     time_module.sleep(delay)
+
+        # Clean up temp directory
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
 
         # Export combined benchmark across all files
         if results and len(self.benchmark._runs) > 1:

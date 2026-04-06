@@ -100,17 +100,40 @@ def main() -> int:
     print("EXTRACTION SUMMARY")
     print(f"{'=' * 50}")
     for result in results:
-        print(f"\n  {result.source_file}:")
-        print(f"    Pages:    {result.total_pages}")
-        print(f"    Rows:     {result.total_rows}")
-        print(f"    Accepted: {result.accepted_count}")
-        print(f"    Flagged:  {result.flagged_count}")
-        print(f"    Failed:   {result.failed_count}")
-        print(f"    Time:     {result.processing_time_seconds:.1f}s")
+        # Results may be ExtractionResult objects or dicts (from subprocess)
+        if isinstance(result, dict):
+            source = result["source_file"]
+            pages = result["total_pages"]
+            rows = result["total_rows"]
+            accepted = result["accepted_count"]
+            flagged = result["flagged_count"]
+            failed = result["failed_count"]
+            time_s = result["processing_time_seconds"]
+        else:
+            source = result.source_file
+            pages = result.total_pages
+            rows = result.total_rows
+            accepted = result.accepted_count
+            flagged = result.flagged_count
+            failed = result.failed_count
+            time_s = result.processing_time_seconds
 
-    total_rows = sum(r.total_rows for r in results)
-    total_accepted = sum(r.accepted_count for r in results)
-    total_flagged = sum(r.flagged_count for r in results)
+        print(f"\n  {source}:")
+        print(f"    Pages:    {pages}")
+        print(f"    Rows:     {rows}")
+        print(f"    Accepted: {accepted}")
+        print(f"    Flagged:  {flagged}")
+        print(f"    Failed:   {failed}")
+        print(f"    Time:     {time_s:.1f}s")
+
+    if isinstance(results[0], dict):
+        total_rows = sum(r["total_rows"] for r in results)
+        total_accepted = sum(r["accepted_count"] for r in results)
+        total_flagged = sum(r["flagged_count"] for r in results)
+    else:
+        total_rows = sum(r.total_rows for r in results)
+        total_accepted = sum(r.accepted_count for r in results)
+        total_flagged = sum(r.flagged_count for r in results)
     print(f"\n  TOTAL: {total_rows} rows ({total_accepted} accepted, {total_flagged} flagged)")
     print(f"  Output: {config.output_path}")
     print(f"{'=' * 50}")

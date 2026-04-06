@@ -13,7 +13,8 @@
       "WebFetch(ai.google.dev)",
       "Bash(ls *)",
       "WebFetch(help.apiyi.com)",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Bash(.venv/bin/python *)"
     ]
   },
   "$version": 3
