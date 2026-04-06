@@ -65,3 +65,4 @@ cloud_vlm:
   api_key_env: GOOGLE_API_KEY
   model: gemini-3-flash-preview
   timeout_seconds: 30
+  parallel_workers: 3

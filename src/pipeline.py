@@ -110,6 +110,249 @@ class Pipeline:
         gc.collect()
         logger.info("Model instances released.")
 
+    def _process_file_cloud_batch(
+        self,
+        file_path: Path,
+        anon_filename: str,
+        anonymizer: PhiAnonymizer,
+    ) -> ExtractionResult:
+        """Process a file using parallel VLM requests for the cloud approach.
+
+        Instead of processing pages sequentially (OCR → layout → API call → next page),
+        this method:
+        1. Runs OCR + layout detection on all pages (sequential, fast, CPU-bound)
+        2. Sends all table crops to the cloud VLM in parallel (I/O bound)
+        3. Processes results into structured records (sequential, fast, CPU-bound)
+
+        This saves wall-clock time by overlapping API network waits.
+        """
+        from . import phi as phi_module
+
+        start_time = time_module.time()
+        file_size_kb = file_path.stat().st_size / 1024
+
+        # Determine anonymized filename
+        patient_name = file_path.name.split("Timesheet")[0].strip(" -_")
+        patient_name = anonymizer.anonymize_patient(patient_name)
+        anon_base = phi_module.PhiAnonymizer._anonymize_filename(
+            file_path.name, patient_name
+        )
+
+        # 1. Load all pages
+        images = self._load_file(file_path)
+        n_pages = len(images)
+        logger.info(f"Loaded {n_pages} page(s) for cloud batch processing")
+
+        # 2. OCR + layout detection on all pages (sequential, CPU-bound)
+        page_data = []  # (image, preprocessed, ocr_result, layout, is_sig, table_crop, page_metrics)
+        for page_idx, image in enumerate(images):
+            page_number = page_idx + 1
+            page_metrics = PageMetrics(source_file=anon_filename, page_number=page_number)
+            logger.info(f"\n--- Page {page_number}/{n_pages} (OCR + layout) ---")
+
+            # Preprocess
+            preprocessed = preprocess_image(image, self.config)
+
+            # OCR for page classification
+            ocr_start = time_module.time()
+            if not self.ocr_engine._initialized:
+                init_start = time_module.time()
+                self.ocr_engine._ensure_initialized()
+                self._ocr_init_time = time_module.time() - init_start
+                page_metrics.ocr_init_time_s = self._ocr_init_time
+            ocr_result = self.ocr_engine.run(preprocessed)
+            page_metrics.ocr_inference_time_s = time_module.time() - ocr_start
+            page_metrics.total_boxes_detected = len(ocr_result.boxes)
+
+            # Layout detection
+            layout_start = time_module.time()
+            layout = detect_layout(image, self.config, ocr_result.boxes)
+            page_metrics.layout_detection_time_s = time_module.time() - layout_start
+
+            # Classify page
+            sig_threshold = self.config.debug.signature_ocr_threshold
+            is_sig = PhiAnonymizer.is_signature_page(len(ocr_result.boxes), sig_threshold)
+
+            table_crop = None
+            if is_sig:
+                logger.info(f"Page {page_number}: Signature page, skipping VLM")
+            else:
+                doclayout_start = time_module.time()
+                table_zone = self.layout_detector.detect_table(image)
+                page_metrics.layout_detection_time_s = (
+                    time_module.time() - doclayout_start
+                )
+                if table_zone is not None:
+                    table_crop = table_zone.crop(image)
+                    logger.info(
+                        f"Page {page_number}: Table detected, "
+                        f"crop {table_crop.shape[1]}x{table_crop.shape[0]}"
+                    )
+                else:
+                    table_crop = image
+                    logger.warning(
+                        f"Page {page_number}: No table detected, using full page"
+                    )
+
+            page_data.append((image, preprocessed, ocr_result, layout, is_sig, table_crop, page_metrics))
+
+        # 3. Batch VLM extraction in parallel (I/O bound)
+        grid_crops = [pd[5] for pd in page_data if pd[5] is not None]
+        grid_indices = [i for i, pd in enumerate(page_data) if pd[5] is not None]
+
+        if grid_crops:
+            max_workers = getattr(self.config.cloud_vlm, "parallel_workers", 3) or 3
+            vlm_batch_start = time_module.time()
+            vlm_results = self.cloud_vlm.batch_extract_table_crops(
+                grid_crops, max_workers=max_workers
+            )
+            vlm_batch_elapsed = time_module.time() - vlm_batch_start
+            logger.info(
+                f"Batch VLM extraction: {len(grid_crops)} pages in {vlm_batch_elapsed:.1f}s"
+            )
+
+            # Map results back to page_data
+            for result_idx, data_idx in enumerate(grid_indices):
+                img, preprocessed, ocr_result, layout, is_sig, table_crop, page_metrics = page_data[data_idx]
+                vlm_results_item = vlm_results[result_idx]
+                page_metrics.vlm_inference_time_s = vlm_batch_elapsed / len(grid_crops)
+                page_data[data_idx] = (img, preprocessed, ocr_result, layout, is_sig, vlm_results_item, page_metrics)
+        else:
+            logger.warning("No grid pages found — no VLM extraction needed")
+
+        # 4. Process results into records (sequential, CPU-bound)
+        records: list[TimesheetRecord] = []
+        for page_idx, pd_item in enumerate(page_data):
+            image, preprocessed, ocr_result, layout, is_sig, vlm_or_crop, page_metrics = pd_item
+            page_number = page_idx + 1
+
+            employee_name = ""
+            employee_conf = 0.0
+            patient_conf = 1.0
+            rows = []
+
+            if is_sig:
+                # Extract employee from footer
+                footer_boxes = boxes_in_zone(
+                    ocr_result.boxes,
+                    layout.footer_zone.x_start,
+                    layout.footer_zone.y_start,
+                    layout.footer_zone.x_end,
+                    layout.footer_zone.y_end,
+                )
+                if footer_boxes:
+                    sorted_footer = sorted(footer_boxes, key=lambda b: (b.y_center, b.x_center))
+                    for box in sorted_footer:
+                        text = clean_name(box.text)
+                        if text and len(text) > 2:
+                            employee_name = text
+                            employee_conf = box.confidence
+                            break
+            else:
+                vlm_results_item = vlm_or_crop  # it's the result dict now
+                employee_name = vlm_results_item.get("rn_lpn_name", "")
+                employee_conf = 0.9 if employee_name else 0.0
+
+                expected_year = extract_expected_year(file_path.name)
+                shifts_data = vlm_results_item.get("shifts", [])
+                if len(shifts_data) > 7:
+                    logger.warning(
+                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding."
+                    )
+                    shifts_data = []
+
+                valid_row_idx = 0
+                for row_data in shifts_data:
+                    date_text = row_data.get("date", "").strip()
+                    time_in_text = row_data.get("time_in", "").strip()
+                    time_out_text = row_data.get("time_out", "").strip()
+                    hours_text = row_data.get("total_hours", "").strip()
+
+                    def is_noise(val: str) -> bool:
+                        return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
+
+                    if (
+                        is_noise(time_in_text)
+                        and is_noise(time_out_text)
+                        and is_noise(hours_text)
+                    ):
+                        continue
+
+                    time_in_parsed, time_out_parsed = disambiguate_times(
+                        time_in_text, time_out_text, hours_text
+                    )
+
+                    rows.append(
+                        TimesheetRow(
+                            row_index=valid_row_idx,
+                            date_text=date_text,
+                            date_parsed=parse_date(date_text, expected_year),
+                            time_in_text=time_in_text,
+                            time_in_parsed=time_in_parsed,
+                            time_out_text=time_out_text,
+                            time_out_parsed=time_out_parsed,
+                            total_hours_text=hours_text,
+                            total_hours_parsed=parse_hours(hours_text),
+                            date_confidence=0.9,
+                            time_in_confidence=0.9,
+                            time_out_confidence=0.9,
+                            hours_confidence=0.9,
+                            date_source=OcrSource.VLM,
+                            time_in_source=OcrSource.VLM,
+                            time_out_source=OcrSource.VLM,
+                            hours_source=OcrSource.VLM,
+                        )
+                    )
+                    valid_row_idx += 1
+
+            # Aggregate employee/patient name across pages
+            record = TimesheetRecord(
+                source_file=anon_filename,
+                page_number=page_number,
+                employee_name=anonymizer.anonymize_employee(employee_name),
+                employee_name_confidence=employee_conf,
+                patient_name=anonymizer.anonymize_patient(patient_name),
+                patient_name_confidence=patient_conf,
+                rows=rows,
+            )
+
+            page_metrics.page_time_s = 0  # Will be set below
+            page_metrics.image_width = image.shape[1]
+            page_metrics.image_height = image.shape[0]
+            self.benchmark.add_page(page_metrics)
+
+            records.append(record)
+
+        # Cross-page employee/patient aggregation
+        best_emp = max(records, key=lambda r: (r.employee_name_confidence, len(r.employee_name))) if records else None
+        best_pat = max(records, key=lambda r: (r.patient_name_confidence, len(r.patient_name))) if records else None
+        for r in records:
+            if not r.employee_name and best_emp and best_emp.employee_name:
+                r.employee_name = best_emp.employee_name
+                r.employee_name_confidence = best_emp.employee_name_confidence
+            if not r.patient_name and best_pat and best_pat.patient_name:
+                r.patient_name = best_pat.patient_name
+                r.patient_name_confidence = best_pat.patient_name_confidence
+
+        # 5. Parse, validate, export
+        parser = TimesheetParser(self.config)
+        parse_start = time_module.time()
+        parser.parse_records(records)
+        page_metrics_total_parse_time = time_module.time() - parse_start
+
+        validation_start = time_module.time()
+        validation_result = self.validate_records(records)
+        page_metrics_total_val_time = time_module.time() - validation_start
+
+        export_start = time_module.time()
+        self.export_results(records, anon_filename, anonymizer)
+        page_metrics_total_export_time = time_module.time() - export_start
+
+        total_elapsed = time_module.time() - start_time
+        self.benchmark.finish_run(total_elapsed)
+
+        return self.benchmark.finalize(records, total_elapsed)
+
     def process_file(
         self, file_path: str | Path, anonymizer: PhiAnonymizer | None = None
     ) -> ExtractionResult:
@@ -125,6 +368,11 @@ class Pipeline:
         logger.info(f"{'=' * 60}")
         logger.info(f"Processing: {file_path.name}")
         logger.info(f"{'=' * 60}")
+
+        # Route cloud approach to batch parallel processing
+        extraction_mode = getattr(self.config, "extraction_mode", "ppocr_grid")
+        if extraction_mode == "layout_guided_vlm_cloud":
+            return self._process_file_cloud_batch(file_path, anon_filename, anonymizer)
 
         # Initialize benchmark with anonymized filename
         file_size_kb = file_path.stat().st_size / 1024 if file_path.exists() else 0

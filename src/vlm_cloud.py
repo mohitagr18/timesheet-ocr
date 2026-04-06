@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,7 @@ from .config import AppConfig
 logger = logging.getLogger(__name__)
 
 MAX_DIM = 2048
+DEFAULT_MAX_WORKERS = 3
 
 
 def _load_dotenv() -> None:
@@ -93,6 +95,8 @@ class CloudVlmExtractor:
 
         The image should contain only the timesheet grid (no headers,
         signatures, footers). Returns dict with 'shifts' list.
+
+        For multi-page files, prefer batch_extract_table_crops() for parallel requests.
         """
         if not self._ensure_client():
             return {"shifts": []}
@@ -127,6 +131,55 @@ class CloudVlmExtractor:
         except Exception as e:
             logger.error(f"Cloud VLM table crop extraction failed: {e}")
             return {"shifts": []}
+
+    def batch_extract_table_crops(
+        self,
+        images: list[np.ndarray],
+        max_workers: int = DEFAULT_MAX_WORKERS,
+    ) -> list[dict]:
+        """Extract shifts from multiple cropped table images in parallel.
+
+        Sends all API requests concurrently using a thread pool.
+        Returns results in the same order as the input images.
+
+        Args:
+            images: List of cropped table images (numpy arrays).
+            max_workers: Max concurrent API requests (default: 5).
+                Respect Gemini rate limits — 3-5 is usually safe.
+
+        Returns:
+            List of extraction results, one per input image.
+        """
+        if not self._ensure_client():
+            return [{"shifts": []} for _ in images]
+
+        if not images:
+            return []
+
+        if len(images) == 1:
+            return [self.extract_table_crop(images[0])]
+
+        logger.info(
+            f"Sending {len(images)} table crops to Gemini in parallel "
+            f"(max_workers={max_workers})..."
+        )
+
+        results: list[dict] = [{} for _ in images]
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.extract_table_crop, img): i
+                for i, img in enumerate(images)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.error(f"Cloud VLM batch extract failed for image {idx}: {e}")
+                    results[idx] = {"shifts": []}
+
+        return results
 
     def _build_table_prompt(self) -> str:
         """Build prompt optimized for cropped table images (no PHI context)."""
