@@ -76,11 +76,9 @@ class CloudVlmConfig(BaseModel):
     api_key_env: str = "GOOGLE_API_KEY"
     model: str = "gemini-3-flash-preview"
     timeout_seconds: int = 30
-    parallel_workers: int = 2
     media_resolution: str = "high"  # "low" | "medium" | "high" | "ultra_high"
     image_quality: int = 92  # JPEG quality (85-95 recommended)
     use_color_images: bool = True  # Send color images to VLM for better accuracy
-    inter_file_delay: int = 5  # Seconds to wait between files (avoid rate limits)
 
 
 class DebugConfig(BaseModel):

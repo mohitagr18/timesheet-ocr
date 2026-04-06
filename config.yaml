@@ -65,8 +65,6 @@ cloud_vlm:
   api_key_env: GOOGLE_API_KEY
   model: gemini-3-flash-preview
   timeout_seconds: 30
-  parallel_workers: 2
   media_resolution: high
   image_quality: 92
   use_color_images: true
-  inter_file_delay: 5
