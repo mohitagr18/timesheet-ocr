@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(curl *)",
+      "Bash(python3 *)",
+      "Bash(uv *)",
+      "Bash(tee *)",
+      "Bash(cat *)",
+      "Bash(git *)"
     ]
-  }
+  },
+  "$version": 3
 }

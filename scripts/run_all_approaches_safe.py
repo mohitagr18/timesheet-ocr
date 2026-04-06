@@ -1,0 +1,452 @@
+"""Resilient batch runner with persistent logging and crash recovery.
+
+This script:
+1. Cleans output directory
+2. Runs ONE approach at a time, saving results immediately after each
+3. Logs everything to a file (survives terminal crashes)
+4. Saves progress state to JSON (can resume if interrupted)
+
+Usage:
+    # Run all approaches from scratch
+    uv run python scripts/run_all_approaches_safe.py
+
+    # Resume from where it left off (skip completed approaches)
+    uv run python scripts/run_all_approaches_safe.py --resume
+"""
+
+import argparse
+import gc
+import json
+import logging
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+INPUT_DIR = PROJECT_ROOT / "input"
+OUTPUT_DIR = PROJECT_ROOT / "output"
+LOG_DIR = PROJECT_ROOT / "logs"
+STATE_FILE = OUTPUT_DIR / ".run_state.json"
+
+APPROACHES = [
+    ("ocr_only", "OCR Only (Baseline)"),
+    ("ppocr_grid", "OCR + VLM Fallback"),
+    ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),
+    ("layout_guided_vlm_cloud", "Layout-Guided VLM (Cloud)"),
+    ("vlm_full_page", "VLM Full Page"),
+]
+
+
+def setup_logging():
+    """Setup logging to both file and console."""
+    LOG_DIR.mkdir(exist_ok=True)
+    
+    # Create log file with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = LOG_DIR / f"batch_run_{timestamp}.log"
+    
+    # Also create a symlink for easy access to latest log
+    latest_log = LOG_DIR / "latest.log"
+    
+    # File handler - detailed format
+    file_handler = logging.FileHandler(log_file, mode='a')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    # Console handler - simpler format
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%H:%M:%S'
+    ))
+    
+    # Root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Create symlink to latest log
+    if latest_log.exists() or latest_log.is_symlink():
+        latest_log.unlink()
+    latest_log.symlink_to(log_file)
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Log file: {log_file}")
+    logger.info(f"Latest log symlink: {latest_log}")
+    
+    return logger
+
+
+def get_input_files():
+    """Get all supported input files."""
+    supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+    files = sorted(
+        f
+        for f in INPUT_DIR.iterdir()
+        if f.suffix.lower() in supported and not f.name.startswith(".")
+    )
+    return files
+
+
+def load_config():
+    """Load current config.yaml."""
+    with open(CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def save_config(config):
+    """Write config back to config.yaml."""
+    with open(CONFIG_PATH, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
+def clean_output_dir():
+    """Remove all approach output directories and combined results."""
+    if OUTPUT_DIR.exists():
+        for item in OUTPUT_DIR.iterdir():
+            if item.name.startswith("."):
+                continue  # Skip hidden files like .gitkeep
+            if item.is_dir():
+                shutil.rmtree(item)
+            elif item.is_file():
+                item.unlink()
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    logging.getLogger(__name__).info("Cleaned output directory.")
+
+
+def save_state(state):
+    """Save progress state to JSON file."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2, default=str)
+    logging.getLogger(__name__).info(f"State saved: {len(state['completed'])} approaches completed")
+
+
+def load_state():
+    """Load progress state if it exists."""
+    if STATE_FILE.exists():
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {"completed": [], "all_results": {}, "all_errors": {}, "total_start": None}
+
+
+def setup_approach_output(approach_id):
+    """Create output directory structure for an approach."""
+    approach_dir = OUTPUT_DIR / approach_id
+    approach_dir.mkdir(exist_ok=True)
+    (approach_dir / "debug").mkdir(exist_ok=True)
+    return approach_dir
+
+
+def move_outputs_to_approach_dir(approach_id):
+    """Move generated output files from output/ root to output/{approach_id}/."""
+    approach_dir = OUTPUT_DIR / approach_id
+    for item in OUTPUT_DIR.iterdir():
+        if item.name.startswith("."):
+            continue  # Skip hidden files
+        if item.is_file() or (item.is_dir() and item.name == "debug"):
+            dest = approach_dir / item.name
+            if dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+                else:
+                    dest.unlink()
+            if item.is_dir():
+                shutil.move(str(item), str(dest))
+            else:
+                shutil.move(str(item), str(dest))
+
+
+def run_approach(approach_id, approach_label, input_files, logger):
+    """Run a single extraction approach on all input files."""
+    logger.info(f"\n{'=' * 70}")
+    logger.info(f"APPROACH: {approach_label} ({approach_id})")
+    logger.info(f"{'=' * 70}")
+
+    # Update config
+    config = load_config()
+    config["extraction_mode"] = approach_id
+    config["debug"]["visualize_ocr"] = False
+    save_config(config)
+    logger.info(f"Config updated: extraction_mode={approach_id}, visualize_ocr=false")
+
+    # Setup output directory
+    setup_approach_output(approach_id)
+
+    # Import pipeline
+    from src.config import load_config as load_app_config
+    from src.pipeline import Pipeline
+
+    app_config = load_app_config(str(CONFIG_PATH))
+    pipeline = Pipeline(app_config)
+
+    results = []
+    errors = []
+
+    # Use process_directory which handles all files and combined benchmark
+    file_start = time.time()
+    try:
+        all_results = pipeline.process_directory(INPUT_DIR)
+        elapsed = time.time() - file_start
+
+        total_rows = sum(r.total_rows for r in all_results)
+        total_accepted = sum(r.accepted_count for r in all_results)
+        total_flagged = sum(r.flagged_count for r in all_results)
+        total_failed = sum(r.failed_count for r in all_results)
+
+        logger.info(
+            f"  DONE: {len(all_results)} file(s) in {elapsed:.1f}s "
+            f"({total_rows} rows, {total_accepted} accepted)"
+        )
+
+        for r in all_results:
+            results.append(
+                {
+                    "file": r.source_file,
+                    "rows": r.total_rows,
+                    "accepted": r.accepted_count,
+                    "flagged": r.flagged_count,
+                    "failed": r.failed_count,
+                }
+            )
+
+    except Exception as e:
+        elapsed = time.time() - file_start
+        logger.error(f"  FAILED after {elapsed:.1f}s: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        errors.append(
+            {
+                "file": "all",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+        )
+
+    # Move outputs to approach directory
+    move_outputs_to_approach_dir(approach_id)
+    logger.info(f"Outputs moved to {OUTPUT_DIR / approach_id}/")
+
+    # Verify files were saved
+    approach_dir = OUTPUT_DIR / approach_id
+    saved_files = list(approach_dir.rglob("*"))
+    logger.info(f"  Verified: {len(saved_files)} files/dirs in {approach_id}/")
+
+    # Destroy pipeline to release any remaining references
+    del pipeline
+    gc.collect()
+
+    return results, errors
+
+
+def run_combined_comparison(logger):
+    """Generate combined comparison across all approaches."""
+    logger.info(f"\n{'=' * 70}")
+    logger.info("GENERATING COMBINED COMPARISON")
+    logger.info(f"{'=' * 70}")
+
+    result = subprocess.run(
+        ["python", "scripts/create_combined_results.py"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        logger.info(result.stdout.strip())
+    if result.stderr:
+        logger.warning(result.stderr.strip())
+
+
+def run_consensus_comparison(logger):
+    """Generate KPI consensus results across all approaches."""
+    logger.info(f"\n{'=' * 70}")
+    logger.info("GENERATING CONSENSUS / KPI RESULTS")
+    logger.info(f"{'=' * 70}")
+
+    result = subprocess.run(
+        ["python", "scripts/create_consensus_results.py"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        logger.info(result.stdout.strip())
+    if result.stderr:
+        logger.warning(result.stderr.strip())
+
+
+def print_summary(all_results, all_errors, total_start, logger):
+    """Print final summary table."""
+    total_elapsed = time.time() - total_start
+
+    logger.info(f"\n{'=' * 70}")
+    logger.info("BATCH RUN COMPLETE")
+    logger.info(f"{'=' * 70}")
+    logger.info(f"Total time: {total_elapsed / 60:.1f} minutes")
+    logger.info("")
+
+    for approach_id, approach_label in APPROACHES:
+        results = all_results.get(approach_id, [])
+        errors = all_errors.get(approach_id, [])
+
+        logger.info(f"{'─' * 50}")
+        logger.info(f"{approach_label} ({approach_id})")
+        logger.info(f"{'─' * 50}")
+
+        if results:
+            total_rows = sum(r["rows"] for r in results)
+            total_accepted = sum(r["accepted"] for r in results)
+            total_flagged = sum(r["flagged"] for r in results)
+            total_failed = sum(r["failed"] for r in results)
+
+            logger.info(f"  Files processed: {len(results)}/{len(get_input_files())}")
+            logger.info(f"  Total rows:      {total_rows}")
+            logger.info(f"  Accepted:        {total_accepted}")
+            logger.info(f"  Flagged:         {total_flagged}")
+            logger.info(f"  Failed:          {total_failed}")
+
+            for r in results:
+                logger.info(
+                    f"    {r['file']}: {r['rows']} rows "
+                    f"({r['accepted']} accepted, {r['flagged']} flagged)"
+                )
+
+        if errors:
+            logger.info(f"  ERRORS:")
+            for e in errors:
+                logger.info(f"    {e['file']}: {e['error']}")
+
+        logger.info("")
+
+    combined_bench = OUTPUT_DIR / "combined" / "benchmark_combined.xlsx"
+    combined_merged = OUTPUT_DIR / "combined" / "merged_combined.xlsx"
+
+    logger.info(f"Output files:")
+    logger.info(
+        f"  Combined benchmark: {combined_bench} ({'✓' if combined_bench.exists() else '✗'})"
+    )
+    logger.info(
+        f"  Combined merged:    {combined_merged} ({'✓' if combined_merged.exists() else '✗'})"
+    )
+    logger.info("")
+
+    for approach_id, _ in APPROACHES:
+        approach_dir = OUTPUT_DIR / approach_id
+        if approach_dir.exists():
+            files = list(approach_dir.glob("*"))
+            logger.info(f"  {approach_id}/: {len(files)} files")
+
+
+def main():
+    # Setup logging first
+    logger = setup_logging()
+    
+    parser = argparse.ArgumentParser(description="Run all OCR approaches safely")
+    parser.add_argument("--resume", action="store_true", 
+                        help="Resume from last saved state (skip completed approaches)")
+    args = parser.parse_args()
+
+    # Load or initialize state
+    if args.resume:
+        state = load_state()
+        logger.info("Resuming from saved state")
+    else:
+        state = {
+            "completed": [],
+            "all_results": {},
+            "all_errors": {},
+            "total_start": time.time()
+        }
+        # Clean output directory (but not the state file if it exists)
+        clean_output_dir()
+    
+    input_files = get_input_files()
+    if not input_files:
+        logger.error("No input files found!")
+        return
+
+    logger.info(f"Found {len(input_files)} input file(s):")
+    for f in input_files:
+        size_kb = f.stat().st_size / 1024
+        logger.info(f"  {f.name} ({size_kb:.0f} KB)")
+    logger.info("")
+
+    all_results = state["all_results"]
+    all_errors = state["all_errors"]
+    completed = set(state["completed"])
+    total_start = state.get("total_start") or time.time()
+
+    # Track if we completed all approaches
+    all_done = True
+
+    for approach_id, approach_label in APPROACHES:
+        if approach_id in completed:
+            logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
+            continue
+
+        # Run this approach
+        approach_start = time.time()
+        try:
+            results, errors = run_approach(approach_id, approach_label, input_files, logger)
+            all_results[approach_id] = results
+            all_errors[approach_id] = errors
+            completed.add(approach_id)
+            
+            # Save state immediately after each approach
+            state = {
+                "completed": list(completed),
+                "all_results": all_results,
+                "all_errors": all_errors,
+                "total_start": total_start
+            }
+            save_state(state)
+            
+            approach_elapsed = time.time() - approach_start
+            logger.info(f"✅ {approach_label} completed in {approach_elapsed:.1f}s")
+            
+        except KeyboardInterrupt:
+            logger.warning(f"\n⚠️  Interrupted during {approach_label}")
+            logger.info("Progress has been saved. Run with --resume to continue.")
+            all_done = False
+            break
+        except Exception as e:
+            logger.error(f"❌ Unexpected error in {approach_label}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            all_errors[approach_id] = [{"file": "all", "error": str(e)}]
+            all_done = False
+            break
+
+    # Only generate combined results if all approaches completed
+    if all_done and len(completed) == len(APPROACHES):
+        run_combined_comparison(logger)
+        run_consensus_comparison(logger)
+        print_summary(all_results, all_errors, total_start, logger)
+        logger.info("\n🎉 All approaches completed successfully!")
+    else:
+        logger.info(f"\n⏸  Partial completion: {len(completed)}/{len(APPROACHES)} approaches done")
+        logger.info("Run with --resume to continue from where we left off")
+
+        # Print partial summary
+        logger.info(f"\nCompleted so far:")
+        for approach_id in completed:
+            approach_label = dict(APPROACHES)[approach_id]
+            results = all_results.get(approach_id, [])
+            if results:
+                total_rows = sum(r["rows"] for r in results)
+                logger.info(f"  ✓ {approach_label}: {total_rows} rows extracted")
+
+
+if __name__ == "__main__":
+    main()

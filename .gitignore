@@ -212,8 +212,8 @@ input/
 # Output data (contains extracted PHI)
 output/
 
-# Ground truth (contains real names, PHI)
-output/ground_truth.xlsx
+# Ground truth (contains real names, PHI) — any extension, any directory
+ground_truth.*
 
 # Name mapping DB (contains real names, PHI)
 output/name_mapping.db

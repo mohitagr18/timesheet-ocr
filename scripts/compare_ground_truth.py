@@ -22,7 +22,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-GROUND_TRUTH_PATH = "output/ground_truth.xlsx"
+GROUND_TRUTH_PATH = "ground_truth.xlsx"
 COMBINED_PATH = "output/combined/benchmark_combined.xlsx"
 NAME_DB_PATH = "output/name_mapping.db"
 
