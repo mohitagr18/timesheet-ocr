@@ -212,6 +212,9 @@ input/
 # Output data (contains extracted PHI)
 output/
 
+# Session reports (auto-generated per run)
+reports/
+
 # Ground truth (contains real names, PHI) — any extension, any directory
 ground_truth.*
 

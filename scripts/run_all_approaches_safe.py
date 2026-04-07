@@ -307,6 +307,67 @@ def run_consensus_comparison(logger):
         logger.warning(result.stderr.strip())
 
 
+REPORTS_DIR = PROJECT_ROOT / "reports"
+
+
+def report_missing_files(all_results, logger):
+    """Check which input files are missing from each approach's output."""
+    input_files = get_input_files()
+    logger.info(f"\n{'=' * 70}")
+    logger.info("MISSING / FAILED FILES REPORT")
+    logger.info(f"{'=' * 70}")
+    any_missing = False
+    report_lines = [
+        f"Session Report — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Input files: {[f.name for f in input_files]}",
+        "",
+    ]
+    for approach_id, approach_label in APPROACHES:
+        results = all_results.get(approach_id, [])
+        processed = {r["file"] for r in results if r["status"] == "success"}
+        failed = {
+            r["file"]: r.get("error", "unknown")
+            for r in results
+            if r["status"] == "failed"
+        }
+        missing = [
+            f.name for f in input_files
+            if f.name not in processed and f.name not in failed
+        ]
+
+        if missing or failed:
+            any_missing = True
+            report_lines.append(f"⚠ {approach_label}:")
+            logger.info(f"\n  ⚠ {approach_label}:")
+            for fname, err in failed.items():
+                line = f"    ✗ {fname}: FAILED — {err}"
+                report_lines.append(line)
+                logger.info(line)
+            for fname in missing:
+                line = f"    ✗ {fname}: MISSING (never processed)"
+                report_lines.append(line)
+                logger.info(line)
+        else:
+            line = f"  ✓ {approach_label}: all {len(input_files)} files present"
+            report_lines.append(f"✓ {approach_label}: all {len(input_files)} files present")
+            logger.info(line)
+
+    if not any_missing:
+        report_lines.append("\nAll approaches completed successfully for all input files.")
+        logger.info(
+            "\n  All approaches have all input files processed successfully."
+        )
+
+    # Save single report file for this session
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = REPORTS_DIR / f"report_{timestamp}.txt"
+    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    logger.info(f"\n  Report saved: {report_path}")
+
+    return any_missing
+
+
 def print_summary(all_results, all_errors, total_start, logger):
     """Print final summary table."""
     total_elapsed = time.time() - total_start
@@ -456,10 +517,12 @@ def main():
         run_combined_comparison(logger)
         run_consensus_comparison(logger)
         print_summary(all_results, all_errors, total_start, logger)
+        report_missing_files(all_results, logger)
         logger.info("\n🎉 All approaches completed successfully!")
     else:
         logger.info(f"\n⏸  Partial completion: {len(completed)}/{len(APPROACHES)} approaches done")
         logger.info("Run with --resume to continue from where we left off")
+        report_missing_files(all_results, logger)
 
         # Print partial summary
         logger.info(f"\nCompleted so far:")

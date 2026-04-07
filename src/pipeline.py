@@ -350,7 +350,7 @@ class Pipeline:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=600,  # 10 min timeout per file
+                    timeout=1200,  # 10 min timeout per file
                 )
 
                 # Read result from temp JSON
