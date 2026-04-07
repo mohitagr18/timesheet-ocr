@@ -1,4 +1,4 @@
-extraction_mode: ocr_only
+extraction_mode: layout_guided_vlm_cloud
 paths:
   input_dir: input
   output_dir: output

@@ -36,8 +36,8 @@ STATE_FILE = OUTPUT_DIR / ".run_state.json"
 
 APPROACHES = [
     ("ocr_only", "OCR Only (Baseline)"),
-    # ("ppocr_grid", "OCR + VLM Fallback"),  # SLOW: local Ollama per-field calls
-    # ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),  # SLOW: local Ollama
+    ("ppocr_grid", "OCR + VLM Fallback"),  # SLOW: local Ollama per-field calls
+    ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),  # SLOW: local Ollama
     ("layout_guided_vlm_cloud", "Layout-Guided VLM (Cloud)"),
     ("vlm_full_page", "VLM Full Page"),
 ]
@@ -194,16 +194,23 @@ def run_approach(approach_id, approach_label, input_files, logger):
     results = []
     errors = []
 
-    # Use process_directory which handles all files and combined benchmark
+    # Use process_directory which handles all files via subprocess
+    # generate_combined=False: combined results generated once at the end
     file_start = time.time()
     try:
-        all_results = pipeline.process_directory(INPUT_DIR)
+        all_results = pipeline.process_directory(INPUT_DIR, generate_combined=False)
         elapsed = time.time() - file_start
 
-        total_rows = sum(r.total_rows for r in all_results)
-        total_accepted = sum(r.accepted_count for r in all_results)
-        total_flagged = sum(r.flagged_count for r in all_results)
-        total_failed = sum(r.failed_count for r in all_results)
+        # Handle both dict (subprocess) and ExtractionResult (in-process) returns
+        def _get(r, attr, default=0):
+            if isinstance(r, dict):
+                return r.get(attr, default)
+            return getattr(r, attr, default)
+
+        total_rows = sum(_get(r, "total_rows") for r in all_results)
+        total_accepted = sum(_get(r, "accepted_count") for r in all_results)
+        total_flagged = sum(_get(r, "flagged_count") for r in all_results)
+        total_failed = sum(_get(r, "failed_count") for r in all_results)
 
         logger.info(
             f"  DONE: {len(all_results)} file(s) in {elapsed:.1f}s "
@@ -213,11 +220,11 @@ def run_approach(approach_id, approach_label, input_files, logger):
         for r in all_results:
             results.append(
                 {
-                    "file": r.source_file,
-                    "rows": r.total_rows,
-                    "accepted": r.accepted_count,
-                    "flagged": r.flagged_count,
-                    "failed": r.failed_count,
+                    "file": _get(r, "source_file", "unknown"),
+                    "rows": _get(r, "total_rows"),
+                    "accepted": _get(r, "accepted_count"),
+                    "flagged": _get(r, "flagged_count"),
+                    "failed": _get(r, "failed_count"),
                     "status": "success",
                 }
             )

@@ -250,9 +250,16 @@ class Pipeline:
         return result
 
     def process_directory(
-        self, input_dir: str | Path | None = None
+        self, input_dir: str | Path | None = None, generate_combined: bool = True
     ) -> list[ExtractionResult]:
-        """Process all supported files in a directory."""
+        """Process all supported files in a directory.
+
+        Args:
+            input_dir: Directory containing input files.
+            generate_combined: If True, generate combined comparison results
+                after processing. Set to False when running as part of a
+                multi-approach benchmark (run_all_approaches_safe.py).
+        """
         if input_dir is None:
             input_dir = self.config.input_path
         else:
@@ -390,7 +397,69 @@ class Pipeline:
             )
             logger.info(f"Combined benchmark exported: {combined_file}")
 
+        # Generate combined comparison and ground truth analysis
+        if results and generate_combined:
+            self._generate_combined_results()
+
         return results
+
+    def _generate_combined_results(self) -> None:
+        """Generate combined comparison and ground truth analysis automatically."""
+        project_root = Path(__file__).resolve().parent.parent
+        combined_script = project_root / "scripts" / "create_combined_results.py"
+        consensus_script = project_root / "scripts" / "create_consensus_results.py"
+
+        if combined_script.exists():
+            logger.info("Generating combined comparison and ground truth analysis...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(combined_script)],
+                    cwd=project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.stdout:
+                    for line in result.stdout.strip().split("\n"):
+                        logger.info(f"  {line}")
+                if result.stderr:
+                    for line in result.stderr.strip().split("\n"):
+                        logger.warning(f"  {line}")
+                bench_file = self.config.output_path / "combined" / "benchmark_combined.xlsx"
+                if bench_file.exists():
+                    logger.info(f"Combined comparison exported: {bench_file}")
+            except subprocess.TimeoutExpired:
+                logger.error("Combined results generation timed out")
+            except Exception as e:
+                logger.error(f"Failed to generate combined results: {e}")
+        else:
+            logger.debug(f"Combined results script not found: {combined_script}")
+
+        if consensus_script.exists():
+            logger.info("Appending KPI/consensus sheets to benchmark_combined...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(consensus_script)],
+                    cwd=project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.stdout:
+                    for line in result.stdout.strip().split("\n"):
+                        logger.info(f"  {line}")
+                if result.stderr:
+                    for line in result.stderr.strip().split("\n"):
+                        logger.warning(f"  {line}")
+                bench_file = self.config.output_path / "combined" / "benchmark_combined.xlsx"
+                if bench_file.exists():
+                    logger.info(f"KPI/consensus sheets appended to: {bench_file}")
+            except subprocess.TimeoutExpired:
+                logger.error("Consensus results generation timed out")
+            except Exception as e:
+                logger.error(f"Failed to generate consensus results: {e}")
+        else:
+            logger.debug(f"Consensus results script not found: {consensus_script}")
 
     def _load_file(self, file_path: Path) -> list[np.ndarray]:
         """Load a file as a list of images (handles both PDFs and images)."""

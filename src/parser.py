@@ -112,10 +112,11 @@ def parse_time(text: str) -> Optional[time]:
     text = re.sub(r"([0-9])\s*A$", r"\1 AM", text)
 
     # 1. Try 12-hour format with AM/PM (or A/P)
-    match = re.search(r"(\d{1,2}):?(\d{2})\s*([AP]\.?M?\.?)", text)
+    # Allows optional colon or space separator. The minute group is optional.
+    match = re.search(r"\b(\d{1,2})[: ]?(\d{2})?\s*([AP]\.?M?\.?)", text)
     if match:
         hour = int(match.group(1))
-        minute = int(match.group(2))
+        minute = int(match.group(2) or 0)
         period = match.group(3).replace(".", "")
 
         if period.startswith("P") and hour != 12:

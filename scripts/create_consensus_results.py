@@ -44,7 +44,7 @@ APPROACH_COLORS = {
     "layout_guided_vlm_cloud": "FCE4EC",
 }
 
-OUTPUT_PATH = "output/combined/consensus.xlsx"
+OUTPUT_PATH = "output/combined/benchmark_combined.xlsx"
 HOURS_TOLERANCE = 0.25
 TIME_TOLERANCE = 30  # minutes
 
@@ -58,6 +58,26 @@ THIN_BORDER = Border(
     left=Side(style="thin"), right=Side(style="thin"),
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
+
+
+# ─── Employee anonymization ──────────────────────────────────────────
+
+def _build_employee_anon_map(gt_rows):
+    """Build deterministic employee name → Employee_A/B/C mapping.
+
+    Matches the pattern used by src/phi.py PhiAnonymizer.anonymize_employee().
+    Names are sorted alphabetically so the mapping is stable across runs.
+    """
+    unique_names = sorted(set(
+        str(g.get("employee_name", "")).strip()
+        for g in gt_rows
+        if str(g.get("employee_name", "")).strip()
+    ))
+    anon_map = {}
+    for idx, name in enumerate(unique_names):
+        letter = chr(ord("A") + idx)
+        anon_map[name] = f"Employee_{letter}"
+    return anon_map
 
 
 # ─── Parse helpers ───────────────────────────────────────────────────
@@ -146,10 +166,16 @@ def load_gt():
 
 
 def load_approach_data(approach_id):
+    # Try approach-specific folder first
     bench_files = sorted(
         f for f in glob.glob(f"output/{approach_id}/benchmark_*.xlsx")
         if "combined" not in f
     )
+    # Fallback: check output/ root for single-approach mode
+    if not bench_files:
+        bench_files = sorted(
+            f for f in glob.glob(f"output/benchmark_*.xlsx") if "combined" not in f
+        )
     rows = []
     for path in bench_files:
         wb = openpyxl.load_workbook(path, read_only=True)
@@ -168,6 +194,8 @@ def load_approach_data(approach_id):
 
     # Fill from merged if available
     merged = f"output/{approach_id}/merged_results.xlsx"
+    if not os.path.exists(merged):
+        merged = "output/merged_results.xlsx"
     if os.path.exists(merged):
         wb = openpyxl.load_workbook(merged, read_only=True)
         ws = wb.active
@@ -234,6 +262,11 @@ def main():
     print("Loading data...")
     gt = load_gt()
     print(f"  Ground truth: {len(gt)} rows")
+
+    # Build employee anonymization map from ground truth
+    emp_anon_map = _build_employee_anon_map(gt)
+    if emp_anon_map:
+        print(f"  Employee anonymization: {len(emp_anon_map)} unique names mapped")
 
     approach_data = {}
     approach_lookups = {}
@@ -347,18 +380,27 @@ def main():
             "to_ok": to_ok,
         })
 
-        # Add per-approach hours
+        # Add per-approach hours to the result dict
+        result = results[-1]
         for aid, _, ext_hrs, _, _, _, _ in approach_scores:
-            r["hrs_" + aid] = ext_hrs
+            result["hrs_" + aid] = ext_hrs
 
     # ─── Write Excel ─────────────────────────────────────────────────
-    print(f"\nWriting results to {OUTPUT_PATH}...")
+    print(f"\nAppending KPI sheets to {OUTPUT_PATH}...")
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    wb = openpyxl.Workbook()
 
-    # Sheet 1: KPI Dashboard
-    ws = wb.active
-    ws.title = "KPI Dashboard"
+    # Open existing benchmark_combined.xlsx or create new workbook
+    if os.path.exists(OUTPUT_PATH):
+        wb = openpyxl.load_workbook(OUTPUT_PATH)
+        # Remove existing sheets if re-running
+        for sheet_name in ["KPI Dashboard", "Per-Row Detail"]:
+            if sheet_name in wb.sheetnames:
+                del wb[sheet_name]
+        ws = wb.create_sheet("KPI Dashboard")
+    else:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "KPI Dashboard"
 
     row = 1
     ws.cell(row=row, column=1, value="Timesheet OCR Extraction — KPI Dashboard").font = Font(bold=True, size=14)
@@ -487,7 +529,8 @@ def main():
         ws2.cell(row=row, column=4).alignment = Alignment(horizontal="center")
         ws2.cell(row=row, column=5, value=r["gt_to"]).border = THIN_BORDER
         ws2.cell(row=row, column=5).alignment = Alignment(horizontal="center")
-        ws2.cell(row=row, column=6, value=r["gt_emp"]).border = THIN_BORDER
+        anon_emp = emp_anon_map.get(r["gt_emp"], r["gt_emp"]) if r["gt_emp"] else ""
+        ws2.cell(row=row, column=6, value=anon_emp).border = THIN_BORDER
         ws2.cell(row=row, column=6).alignment = Alignment(horizontal="center")
 
         ws2.cell(row=row, column=7, value=r["best_hrs"]).border = THIN_BORDER

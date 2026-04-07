@@ -94,3 +94,11 @@ Test whether the subprocess approach (`src/process_single.py`) can handle 20+ ti
 3. **Scales to 20+ files:** Architecture is sound - each file gets its own process with fresh memory
 4. **Error isolation:** If one file fails, others continue independently
 5. **Cleanup works:** `.tmp/` directory properly cleaned up after run
+6. **Automatic combined results:** `process_directory()` now automatically generates `benchmark_combined.xlsx` and `consensus.xlsx` with ground truth comparison
+7. **Single-approach mode fixed:** Combined results scripts now handle output in `output/` root (not just approach-specific subdirectories)
+
+## Fixes Applied
+- `src/pipeline.py`: Added `_generate_combined_results()` method called automatically after `process_directory()`
+- `scripts/create_combined_results.py`: Added fallback to `output/` root for benchmark/merged file paths
+- `scripts/create_consensus_results.py`: Added fallback to `output/` root for benchmark/merged file paths
+- `scripts/create_consensus_results.py`: Fixed `UnboundLocalError` (variable `r` referenced outside scope → changed to `results[-1]`)

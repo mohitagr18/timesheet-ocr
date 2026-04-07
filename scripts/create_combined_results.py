@@ -58,6 +58,24 @@ def _short_label(label, max_len=16):
     return f"{prefix} ({suffix})"
 
 
+def _build_employee_anon_map(names):
+    """Build deterministic employee name → Employee_A/B/C mapping.
+
+    Matches the pattern used by src/phi.py PhiAnonymizer.anonymize_employee().
+    Names are sorted alphabetically so the mapping is stable across runs.
+    Already-anonymized names (e.g. 'Employee_A') pass through unchanged.
+    """
+    unique_names = sorted(set(
+        str(n).strip() for n in names
+        if str(n).strip() and not str(n).strip().startswith("Employee_")
+    ))
+    anon_map = {}
+    for idx, name in enumerate(unique_names):
+        letter = chr(ord("A") + idx)
+        anon_map[name] = f"Employee_{letter}"
+    return anon_map
+
+
 def style_header_row(ws, row, max_col):
     for col in range(1, max_col + 1):
         cell = ws.cell(row=row, column=col)
@@ -77,14 +95,22 @@ def style_data_cell(ws, row, col, fill=None):
 
 def load_benchmark(folder):
     """Load and aggregate all benchmark Excel files from approach output directory."""
+    # Try approach-specific folder first (output/{folder}/benchmark_*.xlsx)
     bench_files = sorted(
         f for f in glob.glob(f"output/{folder}/benchmark_*.xlsx") if "combined" not in f
     )
+    # Fallback: check output/ root for single-approach mode
+    if not bench_files:
+        bench_files = sorted(
+            f for f in glob.glob(f"output/benchmark_*.xlsx") if "combined" not in f
+        )
     if not bench_files:
         return None
 
     # Also load merged results to fill in missing hours
     merged_path = f"output/{folder}/merged_results.xlsx"
+    if not os.path.exists(merged_path):
+        merged_path = "output/merged_results.xlsx"  # Single-approach mode fallback
     merged_by_date = {}
     if os.path.exists(merged_path):
         mwb = openpyxl.load_workbook(merged_path)
@@ -446,10 +472,16 @@ def _compute_hours(time_in_min, time_out_min):
 
 def _load_approach_data_for_gt(approach_id):
     """Load all benchmark data for an approach for ground truth comparison."""
+    # Try approach-specific folder first
     bench_files = sorted(
         f for f in glob.glob(f"output/{approach_id}/benchmark_*.xlsx")
         if "combined" not in f
     )
+    # Fallback: check output/ root for single-approach mode
+    if not bench_files:
+        bench_files = sorted(
+            f for f in glob.glob(f"output/benchmark_*.xlsx") if "combined" not in f
+        )
     all_rows = []
     for path in bench_files:
         wb = openpyxl.load_workbook(path, read_only=True)
@@ -474,6 +506,8 @@ def _load_approach_data_for_gt(approach_id):
 
     # Also load merged results to fill in missing data
     merged_path = f"output/{approach_id}/merged_results.xlsx"
+    if not os.path.exists(merged_path):
+        merged_path = "output/merged_results.xlsx"
     if os.path.exists(merged_path):
         wb = openpyxl.load_workbook(merged_path, read_only=True)
         ws = wb.active
@@ -826,6 +860,26 @@ def add_ground_truth_comparison():
 
     metrics = _compute_gt_metrics(all_results)
 
+    # Build employee anonymization map from all employee names
+    # (ground truth names are real; approach data names may already be anonymized)
+    all_emp_names = []
+    for gt_row in ground_truth:
+        emp = str(gt_row.get("employee_name", "")).strip()
+        if emp:
+            all_emp_names.append(emp)
+    for _, _, comp in all_results:
+        for du in comp.get("duplicates", []):
+            emp = str(du.get("employee", "")).strip()
+            if emp:
+                all_emp_names.append(emp)
+        for ex in comp.get("extra", []):
+            emp = str(ex.get("employee", "")).strip()
+            if emp:
+                all_emp_names.append(emp)
+    emp_anon_map = _build_employee_anon_map(all_emp_names)
+    if emp_anon_map:
+        print(f"  Employee anonymization: {len(emp_anon_map)} unique names mapped")
+
     # Open the existing benchmark_combined.xlsx and add the new sheet
     wb = openpyxl.load_workbook(BENCH_OUTPUT)
     ws = wb.create_sheet("Human-Verified Results")
@@ -1105,7 +1159,9 @@ def add_ground_truth_comparison():
                 ws.cell(row=row, column=4, value=du["status"]).border = THIN_BORDER
                 ws.cell(row=row, column=4).alignment = Alignment(horizontal="center")
                 ws.cell(row=row, column=4).fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-                ws.cell(row=row, column=5, value=du["employee"] if du["employee"] else "").border = THIN_BORDER
+                emp_val = du.get("employee", "")
+                anon_emp = emp_anon_map.get(emp_val, emp_val) if emp_val else ""
+                ws.cell(row=row, column=5, value=anon_emp).border = THIN_BORDER
                 ws.cell(row=row, column=5).alignment = Alignment(horizontal="left")
                 row += 1
 
@@ -1143,7 +1199,9 @@ def add_ground_truth_comparison():
                 ws.cell(row=row, column=4, value=ex["status"]).border = THIN_BORDER
                 ws.cell(row=row, column=4).alignment = Alignment(horizontal="center")
                 ws.cell(row=row, column=4).fill = MISMATCH_FILL
-                ws.cell(row=row, column=5, value=ex["employee"] if ex["employee"] else "").border = THIN_BORDER
+                emp_val = ex.get("employee", "")
+                anon_emp = emp_anon_map.get(emp_val, emp_val) if emp_val else ""
+                ws.cell(row=row, column=5, value=anon_emp).border = THIN_BORDER
                 ws.cell(row=row, column=5).alignment = Alignment(horizontal="left")
                 row += 1
 
