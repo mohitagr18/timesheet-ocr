@@ -24,9 +24,11 @@ All notable changes to this project will be documented in this file.
 - Implementation plans moved to `docs/` directory
 
 ### Fixed
-- Summary metrics NA issue — corrected metric key mappings between benchmark.py and create_combined_results.py
+- Summary metrics NA issue — corrected metric key mappings between benchmark.py and rebuild_combined_report.py
 - Corrupted `accept_threshold` config value
 - Benchmark accumulation bug — pages/rows now reset per file
+- Combined report column index bugs — rebuilt from scratch in `rebuild_combined_report.py`
+- Hours accuracy metric inflated by partial matches — now uses actual hours tolerance check
 
 ### Removed
 - `debug_layout.py` scratch script

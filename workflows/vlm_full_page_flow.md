@@ -12,7 +12,7 @@ Because it relies exclusively on Ollama hosting Qwen2.5-VL natively across the e
 
 ```mermaid
 graph TD
-    A[Start: Read Timesheet PDF Page] --> B[Downsample to Max 1024px]
+    A[Start: Read Timesheet PDF Page] --> B[Downsample to Max 2048px]
     B --> C[Convert Image to High-Q JPG Base64 String]
     
     C --> D[Compile System Prompt Framework]
@@ -35,4 +35,4 @@ graph TD
 
 - **Grid Agnostic**: When using this mode, the parameters inside `layout` in `config.yaml` are strictly ignored. The system handles table logic dynamically through prompt spatial instructions found within `vlm_fallback.py`.
 - **Hallucinated Rows Prevention**: VLM output often generates "Ghost Shifts" corresponding to empty grid slots structurally detected down the table. The pipeline explicitly scrubs output arrays, removing shifts that do not yield physical "Time In" or "Time Out" field strings, avoiding pollution of the unified Excel results table. 
-- **Time Complexity Cost**: This execution pipeline utilizes extremely deep context reasoning, leading to ~60 to 90 seconds of processing time per page depending on GPU allocation. Only use for heavily chaotic/matrix layout templates.
+- **Time Complexity Cost**: This execution pipeline utilizes deep context reasoning. Expect ~200–400 seconds per page on CPU with local Ollama. On GPU-backed instances this drops significantly. Only use for heavily chaotic/matrix layout templates.

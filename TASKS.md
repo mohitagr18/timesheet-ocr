@@ -72,7 +72,7 @@ Test whether the subprocess approach (`src/process_single.py`) can handle 20+ ti
 - If interrupted, check `logs/latest.log` to see what was processed
 - If OOM occurs again, check if subprocess approach is actually being used
 - Config `extraction_mode` determines which OCR approach runs (affects speed/memory)
-- Subprocess has 600s (10 min) timeout per file
+- Subprocess has 600s (10 min) timeout per file (configurable in `src/pipeline.py`)
 - Signature pages are automatically skipped (no extraction)
 - Previously processed files are skipped if `merged_results.xlsx` exists
 
@@ -99,6 +99,8 @@ Test whether the subprocess approach (`src/process_single.py`) can handle 20+ ti
 
 ## Fixes Applied
 - `src/pipeline.py`: Added `_generate_combined_results()` method called automatically after `process_directory()`
-- `scripts/create_combined_results.py`: Added fallback to `output/` root for benchmark/merged file paths
+- `scripts/rebuild_combined_report.py`: New clean combined report script using column names (not positional indices)
 - `scripts/create_consensus_results.py`: Added fallback to `output/` root for benchmark/merged file paths
 - `scripts/create_consensus_results.py`: Fixed `UnboundLocalError` (variable `r` referenced outside scope → changed to `results[-1]`)
+- `scripts/run_all_approaches_safe.py`: Added missing/failed files report saved to `reports/` directory
+- `scripts/run_all_approaches_safe.py`: Updated to call `rebuild_combined_report.py` for combined results

@@ -149,7 +149,7 @@ The `Human-Verified Results` sheet in `benchmark_combined.xlsx` contains three s
 | File | Purpose |
 |------|---------|
 | `ground_truth.xlsx` (project root) | Manual ground truth data (user-filled, git-ignored) |
-| `scripts/create_combined_results.py` | Combined metrics + ground truth comparison (runs automatically) |
+| `scripts/rebuild_combined_report.py` | Combined metrics + ground truth comparison (runs automatically) |
 | `scripts/create_consensus_results.py` | KPI dashboard + per-approach accuracy (runs automatically) |
 | `scripts/run_all_approaches_safe.py` | Batch runner that orchestrates everything |
 | `output/combined/benchmark_combined.xlsx` | Output with Human-Verified Results + Time Comparison sheets |
