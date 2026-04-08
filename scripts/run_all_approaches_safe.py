@@ -278,7 +278,7 @@ def run_combined_comparison(logger):
     logger.info(f"{'=' * 70}")
 
     result = subprocess.run(
-        ["python", "scripts/create_combined_results.py"],
+        ["python", "scripts/rebuild_combined_report.py"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
