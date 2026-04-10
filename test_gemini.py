@@ -15,37 +15,49 @@ from src.config import load_config
 from src.vlm_cloud import CloudVlmExtractor
 
 def main():
-    # Load the real configuration from your config.yaml
     config = load_config()
-
-    # The vlm_cloud.py file will automatically check if GOOGLE_API_KEY
-    # is available via your .env file or environment variables based
-    # on the 'api_key_env' setting in config.yaml.
     
-    # Update this path to one of the actual folders you just generated!
-    # e.g., "explore/output/patient_1/phi_safe_payload.jpg"
-    payload_path = Path("/Users/mohit/Documents/GitHub/timesheet-ocr/explore/output/C.Ferguson Timesheets - 010726-011326/phi_safe_payload.jpg")
+    # Target directory for the specific patient/file you just processed
+    # CHANGE THIS to the folder you want to test (e.g., "explore/output/K_Drewry")
+    target_dir = Path("explore/output/N_Rivera")
     
-    if not payload_path.exists():
-        print(f"ERROR: Cannot find {payload_path}")
-        print("Please update the payload_path variable to point to a real image.")
+    if not target_dir.exists():
+        print(f"ERROR: Cannot find directory {target_dir}")
         return
 
-    print(f"Loading payload: {payload_path}")
-    img = cv2.imread(str(payload_path))
+    # Find all payload files in that directory
+    payload_files = sorted(target_dir.glob("phi_safe_payload_page_*.jpg"))
     
-    if img is None:
-        print(f"ERROR: Failed to load image at {payload_path}")
+    if not payload_files:
+        print(f"ERROR: No phi_safe_payload_page_*.jpg files found in {target_dir}")
         return
 
-    # Initialize the extractor with your actual loaded config
+    print(f"Found {len(payload_files)} payload(s) to process.")
+    
+    # Initialize the extractor once
     extractor = CloudVlmExtractor(config)
     
-    print(f"Sending payload to Gemini API ({config.cloud_vlm.model})...")
-    result = extractor.extract_table_crop(img)
+    all_results = {}
+
+    # Loop through every page payload found
+    for payload_path in payload_files:
+        print(f"\n--- Processing {payload_path.name} ---")
+        
+        img = cv2.imread(str(payload_path))
+        if img is None:
+            print(f"ERROR: Failed to load image at {payload_path}")
+            continue
+
+        print(f"Sending to Gemini API ({config.cloud_vlm.model})...")
+        result = extractor.extract_table_crop(img)
+        
+        # Store results keyed by the filename
+        all_results[payload_path.name] = result
     
-    print("\n--- GEMINI EXTRACTION RESULT ---")
-    print(json.dumps(result, indent=2))
+    print("\n========================================")
+    print("      FINAL MULTI-PAGE EXTRACTION         ")
+    print("========================================")
+    print(json.dumps(all_results, indent=2))
 
 if __name__ == "__main__":
     main()
