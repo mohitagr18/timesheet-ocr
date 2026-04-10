@@ -81,23 +81,24 @@ Results from processing **Sample Timesheets** (2 pages, 7 expected shifts):
 
 | Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) | Band-Crop VLM (Cloud) |
 |--------|----------|-------------------|---------------|--------------------------|--------------------------|----------------------|
-| **Processing Time (s)** | **70.0** | 107.1 | 436.5 | 429.1 | 85.0 | — |
-| **Rows Extracted** | 5 | 6 | 5 | 6 | 5 | — |
-| **Accepted Rows** | 0 | 1 | 2 | 3 | **5** | — |
-| **Flagged Rows** | 5 | 5 | 3 | 3 | **0** | — |
-| **Mean Confidence** | 0.883 | 0.873 | **0.900** | **0.900** | **0.900** | — |
-| **VLM Fallbacks** | **0** | 6 | 0 | 0 | 0 | 0 |
-| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 60.0% | 50.0% | **0.0%** | — |
-| **Field Missing Rate** | 100.0% | 83.3% | **0.0%** | **0.0%** | **0.0%** | — |
-| **Mean CER** | 0.342 | 0.398 | 0.400 | 0.233 | **0.200** | — |
+| **Processing Time (s)** | 218.0 | 397.8 | 1932.3 | 1463.6 | **516.6** | 324.9 |
+| **Rows Extracted** | 16 | 24 | 19 | 20 | 18 | 18 |
+| **Accepted Rows** | 2 | 3 | 13 | 13 | **16** | 12 |
+| **Flagged Rows** | 14 | 21 | 6 | 7 | 2 | 6 |
+| **Mean Confidence** | 0.673 | 0.653 | **0.900** | **0.900** | **0.900** | **0.900** |
+| **VLM Fallbacks** | **0** | 0 | 0 | 0 | 0 | 0 |
+| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 31.6% | 25.0% | **0.0%** | 16.7% |
+| **Field Missing Rate** | 81.3% | 79.2% | **0.0%** | **0.0%** | **0.0%** | **0.0%** |
+| **Mean CER** | 0.414 | 0.632 | 0.553 | 0.424 | 0.495 | 0.491 |
 
 ### Key Findings
 
-- **Layout-Guided VLM (Cloud)** achieves the highest quality: 100% acceptance rate, 0% field missing, lowest CER
-- **Band-Crop VLM (Cloud)** sends only billing fields (DATE row + TIME IN/OUT/HOURS) to Gemini — zero clinical PHI transmitted, strongest privacy compliance
-- **OCR Only** is the fastest but produces 0 accepted rows — handwritten text requires VLM assistance
-- **OCR + VLM Fallback** uses 6 VLM calls but still only accepts 1 of 6 rows — per-cell fallback is insufficient for heavily handwritten forms
-- **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference but produce reasonable results
+- **Layout-Guided VLM (Cloud)** achieves the best accuracy: 16 accepted rows, 0% hours mismatch, 0% field missing
+- **Band-Crop VLM (Cloud)** is the fastest cloud approach (324.9s vs 516.6s for layout-guided cloud), processes multi-page documents extracting ~15% of page pixels per Gemini call with zero clinical PHI transmitted
+- **OCR Only** is the fastest overall (218.0s) but produces only 2 accepted rows with 81.3% field missing rate — handwritten text requires VLM assistance
+- **OCR + VLM Fallback** extracts the most rows (24) but only accepts 3 due to low OCR confidence on handwritten text
+- **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference
+- **Band-Crop** trades some precision for privacy: 16.7% hours mismatch vs 0% for layout-guided cloud, but sends 85% less data to Gemini
 
 ---
 

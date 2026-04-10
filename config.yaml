@@ -16,7 +16,7 @@
 #   layout_guided_vlm_cloud– Same as above but uses cloud VLM (Gemini).
 #   band_crop_vlm_cloud    – PP-DocLayoutV3 detects table, then surgical
 #                             two-band crop (DATE row + footer block) —
-#                             only billing fields transmitted to Gemini.
+#                             only bi1lling fields transmitted to Gemini.
 extraction_mode: band_crop_vlm_cloud
 
 # ── File paths ────────────────────────────────────────────────────────
