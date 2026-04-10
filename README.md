@@ -1,7 +1,7 @@
 # Timesheet OCR
 
 <div align="center">
-  <h3>A privacy-first pipeline to extract, validate, and structure data from scanned handwritten home-health timesheets using 5 distinct approaches.</h3>
+  <h3>A privacy-first pipeline to extract, validate, and structure data from scanned handwritten home-health timesheets using 6 distinct approaches.</h3>
 </div>
 
 <br/>
@@ -50,7 +50,7 @@ graph TD
 
 ---
 
-## 🔬 5 Extraction Approaches
+## 🔬 6 Extraction Approaches
 
 | # | Approach | Mode | Description | Speed | Best For |
 |---|----------|------|-------------|-------|----------|

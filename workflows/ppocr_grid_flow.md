@@ -21,7 +21,7 @@ graph TD
     E --> F[Run Global PaddleOCR Box Detection]
     F --> G{For Each Time Field Column in Shift}
     
-    G --> H{Cell Blank / Too Long \n or low confidence?}
+    G --> H{Cell Blank / Too Long or low confidence?}
     H -->|No| I[Accept Raw PP-OCR String Result]
     H -->|Yes| J[Crop Origin Un-Binarized Color Cell]
     
