@@ -34,6 +34,7 @@ APPROACHES = [
     ("vlm_full_page", "VLM Full"),
     ("layout_guided_vlm_local", "Layout Local"),
     ("layout_guided_vlm_cloud", "Layout Cloud"),
+    ("band_crop_vlm_cloud", "Band-Crop VLM"),
 ]
 
 APPROACH_COLORS = {
@@ -42,6 +43,7 @@ APPROACH_COLORS = {
     "vlm_full_page": "D6E4F0",
     "layout_guided_vlm_local": "FFF2CC",
     "layout_guided_vlm_cloud": "FCE4EC",
+    "band_crop_vlm_cloud": "F3E5F5",
 }
 
 OUTPUT_PATH = "output/combined/benchmark_combined.xlsx"

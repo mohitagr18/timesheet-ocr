@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 COMBINED_DIR = os.path.join(OUTPUT_DIR, "combined")
-BENCH_OUTPUT = os.path.join(COMBINED_DIR, "benchmark_combined_v2.xlsx")
+BENCH_OUTPUT = os.path.join(COMBINED_DIR, "benchmark_combined.xlsx")
 GROUND_TRUTH_PATH = os.path.join(PROJECT_ROOT, "ground_truth.xlsx")
 
 HOURS_TOLERANCE = 0.25
@@ -34,6 +34,7 @@ APPROACHES = [
     ("vlm_full_page", "VLM Full", "D6E4F0"),
     ("layout_guided_vlm_local", "Layout Local", "FFF2CC"),
     ("layout_guided_vlm_cloud", "Layout Cloud", "FCE4EC"),
+    ("band_crop_vlm_cloud", "Band-Crop VLM", "F3E5F5"),
 ]
 
 HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")

@@ -17,28 +17,32 @@ graph TD
     A[Upload Timesheet PDFs] --> B[Pipeline Orchestrator]
     B --> C[Preprocess & Deskew]
     C --> D{extraction_mode}
-    
+
     D -->|ocr_only| E1[PaddleOCR Grid Extraction]
     E1 --> F1[Parse & Validate — No VLM]
-    
+
     D -->|ppocr_grid| E2[PaddleOCR Grid Extraction]
     E2 --> F2{Cell Confidence Check}
     F2 -->|Low| G2[VLM Fallback via Ollama]
     F2 -->|OK| H2[Parse & Validate]
     G2 --> H2
-    
+
     D -->|vlm_full_page| E3[Full Page → VLM via Ollama]
     E3 --> F3[Parse JSON Shifts & Validate]
-    
+
     D -->|layout_guided_vlm_local| E4[PP-DocLayoutV3 Table Crop]
     E4 --> F4[Local VLM via Ollama]
     F4 --> G4[Parse JSON Shifts & Validate]
-    
+
     D -->|layout_guided_vlm_cloud| E5[PP-DocLayoutV3 Table Crop]
     E5 --> F5[Cloud VLM API Gemini]
     F5 --> G5[Parse JSON Shifts & Validate]
-    
-    F1 & H2 & F3 & G4 & G5 --> I[Validation Engine]
+
+    D -->|band_crop_vlm_cloud| E6[Surgical Two-Band Crop]
+    E6 --> F6[Cloud VLM API Gemini]
+    F6 --> G6[Parse JSON Shifts & Validate]
+
+    F1 & H2 & F3 & G4 & G5 & G6 --> I[Validation Engine]
     I -->|Errors| J[Review Queue]
     I -->|Clean| K[Accepted]
     J & K --> L[Export: Excel + JSON + Benchmark]
@@ -55,6 +59,7 @@ graph TD
 | 3 | **VLM Full Page** | `vlm_full_page` | Entire page sent to local VLM for structured JSON extraction. | ⚡ Slow | Messy layouts, cursive handwriting |
 | 4 | **Layout-Guided VLM (Local)** | `layout_guided_vlm_local` | PP-DocLayoutV3 detects table zone, crops it, sends to local VLM. | ⚡ Slow | Balance of accuracy + privacy |
 | 5 | **Layout-Guided VLM (Cloud)** | `layout_guided_vlm_cloud` | PP-DocLayoutV3 detects table zone, crops it, sends to cloud VLM (Gemini). | ⚡⚡ Moderate | Maximum accuracy, API available |
+| 6 | **Band-Crop VLM (Cloud)** | `band_crop_vlm_cloud` | PP-DocLayoutV3 detects table, then surgical two-band crop (DATE row + footer block) — only billing fields transmitted to Gemini. Zero clinical PHI sent to cloud. | ⚡⚡ Moderate | Maximum accuracy + strongest PHI compliance |
 
 ### Workflow Diagrams
 
@@ -65,6 +70,7 @@ Detailed Mermaid diagrams for each approach are in the [`workflows/`](workflows/
 - [`workflows/vlm_full_page_flow.md`](workflows/vlm_full_page_flow.md)
 - [`workflows/layout_guided_vlm_local_flow.md`](workflows/layout_guided_vlm_local_flow.md)
 - [`workflows/layout_guided_vlm_cloud_flow.md`](workflows/layout_guided_vlm_cloud_flow.md)
+- [`workflows/band_crop_vlm_cloud_flow.md`](workflows/band_crop_vlm_cloud_flow.md)
 - [`workflows/ground_truth_comparison.md`](workflows/ground_truth_comparison.md) — Ground truth comparison workflow
 
 ---
@@ -73,21 +79,22 @@ Detailed Mermaid diagrams for each approach are in the [`workflows/`](workflows/
 
 Results from processing **Sample Timesheets** (2 pages, 7 expected shifts):
 
-| Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) |
-|--------|----------|-------------------|---------------|--------------------------|--------------------------|
-| **Processing Time (s)** | **70.0** | 107.1 | 436.5 | 429.1 | 85.0 |
-| **Rows Extracted** | 5 | 6 | 5 | 6 | 5 |
-| **Accepted Rows** | 0 | 1 | 2 | 3 | **5** |
-| **Flagged Rows** | 5 | 5 | 3 | 3 | **0** |
-| **Mean Confidence** | 0.883 | 0.873 | **0.900** | **0.900** | **0.900** |
-| **VLM Fallbacks** | **0** | 6 | 0 | 0 | 0 |
-| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 60.0% | 50.0% | **0.0%** |
-| **Field Missing Rate** | 100.0% | 83.3% | **0.0%** | **0.0%** | **0.0%** |
-| **Mean CER** | 0.342 | 0.398 | 0.400 | 0.233 | **0.200** |
+| Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) | Band-Crop VLM (Cloud) |
+|--------|----------|-------------------|---------------|--------------------------|--------------------------|----------------------|
+| **Processing Time (s)** | **70.0** | 107.1 | 436.5 | 429.1 | 85.0 | — |
+| **Rows Extracted** | 5 | 6 | 5 | 6 | 5 | — |
+| **Accepted Rows** | 0 | 1 | 2 | 3 | **5** | — |
+| **Flagged Rows** | 5 | 5 | 3 | 3 | **0** | — |
+| **Mean Confidence** | 0.883 | 0.873 | **0.900** | **0.900** | **0.900** | — |
+| **VLM Fallbacks** | **0** | 6 | 0 | 0 | 0 | 0 |
+| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 60.0% | 50.0% | **0.0%** | — |
+| **Field Missing Rate** | 100.0% | 83.3% | **0.0%** | **0.0%** | **0.0%** | — |
+| **Mean CER** | 0.342 | 0.398 | 0.400 | 0.233 | **0.200** | — |
 
 ### Key Findings
 
 - **Layout-Guided VLM (Cloud)** achieves the highest quality: 100% acceptance rate, 0% field missing, lowest CER
+- **Band-Crop VLM (Cloud)** sends only billing fields (DATE row + TIME IN/OUT/HOURS) to Gemini — zero clinical PHI transmitted, strongest privacy compliance
 - **OCR Only** is the fastest but produces 0 accepted rows — handwritten text requires VLM assistance
 - **OCR + VLM Fallback** uses 6 VLM calls but still only accepts 1 of 6 rows — per-cell fallback is insufficient for heavily handwritten forms
 - **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference but produce reasonable results
@@ -102,7 +109,7 @@ The pipeline includes a ground truth comparison workflow that evaluates extracti
 
 1. **Fill in ground truth**: Manually enter expected values in `ground_truth.xlsx` (project root)
    - Columns: `source_file`, `date`, `total_hours`, `time_in`, `time_out`, `employee_name`
-2. **Run all 5 approaches**: Use `scripts/run_all_approaches_safe.py` to generate benchmark data
+2. **Run all 6 approaches**: Use `scripts/run_all_approaches_safe.py` to generate benchmark data
 3. **Automatic**: Combined metrics and ground truth comparison are generated automatically after all approaches complete:
    - `output/combined/benchmark_combined.xlsx` — approach comparison + Human-Verified Results + Time Comparison
    - `output/combined/consensus.xlsx` — KPI dashboard + per-row best-approach detail
@@ -179,10 +186,10 @@ cp .env.example .env
 uv run timesheet-ocr --verbose
 ```
 
-### Run All 5 Approaches for Benchmarking
+### Run All 6 Approaches for Benchmarking
 
 ```bash
-# Run all 5 approaches (uses config.yaml extraction_mode internally)
+# Run all 6 approaches (uses config.yaml extraction_mode internally)
 uv run python scripts/run_all_approaches_safe.py
 
 # If interrupted, resume from last completed approach:
@@ -201,7 +208,7 @@ uv run python scripts/run_all_approaches_safe.py --resume
 Key settings in `config.yaml`:
 
 ```yaml
-extraction_mode: "ppocr_grid"   # ocr_only | ppocr_grid | vlm_full_page | layout_guided_vlm_local | layout_guided_vlm_cloud
+extraction_mode: "ppocr_grid"   # ocr_only | ppocr_grid | vlm_full_page | layout_guided_vlm_local | layout_guided_vlm_cloud | band_crop_vlm_cloud
 
 confidence:
   accept_threshold: 0.90        # Accept OCR results above this confidence
@@ -235,6 +242,7 @@ output/
 ├── vlm_full_page/               # Approach 3 results
 ├── layout_guided_vlm_local/     # Approach 4 results
 ├── layout_guided_vlm_cloud/     # Approach 5 results
+├── band_crop_vlm_cloud/         # Approach 6 results
 ├── combined/                    # Combined benchmark across all approaches
 │   ├── benchmark_combined.xlsx  # Summary + row-level + Human-Verified Results + Time Comparison
 │   ├── consensus.xlsx           # KPI dashboard + per-row best-approach detail
@@ -259,8 +267,8 @@ The `benchmark_combined.xlsx` file contains:
 - **Time Comparison** — Three tables: Time-In comparison, Time-Out comparison, and Correctness Summary
 
 The `consensus.xlsx` file contains:
-- **KPI Dashboard** — Per-approach accuracy (Hours ±0.25h, Time-In ±30min, Time-Out ±30min) plus "Best of 5" accuracy and approach win counts
-- **Per-Row Detail** — For each ground truth row, which approach had the closest hours and all 5 approaches' values side-by-side
+- **KPI Dashboard** — Per-approach accuracy (Hours ±0.25h, Time-In ±30min, Time-Out ±30min) plus "Best of 6" accuracy and approach win counts
+- **Per-Row Detail** — For each ground truth row, which approach had the closest hours and all 6 approaches' values side-by-side
 
 ---
 
