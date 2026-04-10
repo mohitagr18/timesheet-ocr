@@ -52,6 +52,7 @@ from .review_queue import build_review_queue
 from .validation import validate_record
 from .vlm_fallback import VlmFallback
 from .vlm_cloud import CloudVlmExtractor
+from .band_crop_extractor import BandCropExtractor
 
 if TYPE_CHECKING:
     from .config import AppConfig
@@ -71,6 +72,7 @@ class Pipeline:
         self.vlm = VlmFallback(config)
         self.layout_detector = DocLayoutDetector(config)
         self.cloud_vlm = CloudVlmExtractor(config)
+        self.band_crop_extractor = BandCropExtractor(config)
         self.benchmark = BenchmarkCollector()
         self._ocr_init_time = 0.0
         self.name_db = None
@@ -136,6 +138,8 @@ class Pipeline:
         extraction_mode = getattr(self.config, "extraction_mode", "ppocr_grid")
         if extraction_mode == "vlm_full_page":
             model_type = "qwen3-vl:8b"
+        elif extraction_mode == "band_crop_vlm_cloud":
+            model_type = "gemini-band-crop"
         device = self.config.ppocr.device
         image_dpi = self.config.preprocessing.target_dpi
         self.benchmark.start_run(
@@ -232,6 +236,8 @@ class Pipeline:
             mode_label = "vlm"
         elif extraction_mode == "ocr_only":
             mode_label = "ocr_only"
+        elif extraction_mode == "band_crop_vlm_cloud":
+            mode_label = "band_crop"
         else:
             mode_label = "ppocr"
         self.benchmark.snapshot_run(mode=mode_label)
@@ -380,7 +386,7 @@ class Pipeline:
 
             # Rate-limit delay for cloud approach
             extraction_mode = getattr(self.config, "extraction_mode", "")
-            if extraction_mode == "layout_guided_vlm_cloud" and file_idx < len(files) - 1:
+            if extraction_mode in ("layout_guided_vlm_cloud", "band_crop_vlm_cloud") and file_idx < len(files) - 1:
                 delay = getattr(self.config.cloud_vlm, "inter_file_delay", 5)
                 if delay > 0:
                     logger.info(f"⏳ Rate-limit delay: {delay}s before next file...")
@@ -779,6 +785,93 @@ class Pipeline:
                         source_file=anon_filename,
                         output_dir=self.config.debug_output_path,
                     )
+
+        elif getattr(self.config, "extraction_mode", "ppocr_grid") == "band_crop_vlm_cloud":
+            # Band-crop approach: extract DATE row + footer block, send to Gemini
+            band_start = time_module.time()
+            payload_image, is_sig_page = self.band_crop_extractor.build_phi_safe_payload(
+                image
+            )
+            page_metrics.layout_detection_time_s = time_module.time() - band_start
+
+            if is_sig_page or payload_image is None:
+                logger.info(
+                    f"Page {page_number} identified as signature page by band_crop. "
+                    f"Skipping extraction."
+                )
+            else:
+                # Send stitched payload to Gemini
+                vlm_start = time_module.time()
+                vlm_results = self.cloud_vlm.extract_table_crop(payload_image)
+                page_metrics.vlm_inference_time_s = time_module.time() - vlm_start
+
+                employee_name = vlm_results.get("rn_lpn_name", "")
+                employee_conf = 0.9 if employee_name else 0.0
+
+                valid_row_idx = 0
+                shifts_data = vlm_results.get("shifts", [])
+
+                if len(shifts_data) > 7:
+                    logger.warning(
+                        f"Page {page_number} band_crop VLM hallucinated "
+                        f"{len(shifts_data)} rows! Discarding."
+                    )
+                    shifts_data = []
+
+                for row_data in shifts_data:
+                    date_text = row_data.get("date", "").strip()
+                    time_in_text = row_data.get("time_in", "").strip()
+                    time_out_text = row_data.get("time_out", "").strip()
+                    hours_text = row_data.get("total_hours", "").strip()
+
+                    def is_noise(val: str) -> bool:
+                        return len(re.sub(r"[^a-zA-Z0-9]", "", val)) == 0
+
+                    if (
+                        is_noise(time_in_text)
+                        and is_noise(time_out_text)
+                        and is_noise(hours_text)
+                    ):
+                        continue
+
+                    time_in_parsed, time_out_parsed = disambiguate_times(
+                        time_in_text, time_out_text, hours_text
+                    )
+
+                    rows.append(
+                        TimesheetRow(
+                            row_index=valid_row_idx,
+                            date_text=date_text,
+                            date_parsed=parse_date(date_text, expected_year),
+                            time_in_text=time_in_text,
+                            time_in_parsed=time_in_parsed,
+                            time_out_text=time_out_text,
+                            time_out_parsed=time_out_parsed,
+                            total_hours_text=hours_text,
+                            total_hours_parsed=parse_hours(hours_text),
+                            date_confidence=0.9,
+                            time_in_confidence=0.9,
+                            time_out_confidence=0.9,
+                            hours_confidence=0.9,
+                            date_source=OcrSource.VLM,
+                            time_in_source=OcrSource.VLM,
+                            time_out_source=OcrSource.VLM,
+                            hours_source=OcrSource.VLM,
+                        )
+                    )
+                    valid_row_idx += 1
+
+                # Debug visualization
+                if (
+                    getattr(self.config, "debug", None)
+                    and self.config.debug.visualize_ocr
+                ):
+                    debug_path = (
+                        self.config.debug_output_path
+                        / f"band_crop_payload_page_{page_number}.jpg"
+                    )
+                    debug_path.parent.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(debug_path), payload_image)
 
         elif self.config.extraction_mode == "ocr_only":
             ocr_start = time_module.time()

@@ -13,7 +13,7 @@ This approach uses **PP-DocLayoutV3** to detect and crop the table zone from the
 ```mermaid
 graph TD
     A[Start: Read Timesheet PDF Page] --> B[Quick PaddleOCR Pass for Classification]
-    B --> C{Signature Page?\n< 100 OCR boxes}
+    B --> C{Signature Page? < 100 OCR boxes}
     
     C -->|Yes| D[Extract Employee Name from Footer]
     D --> E[Skip VLM, Return Empty Rows]
@@ -28,7 +28,7 @@ graph TD
     I --> J
     
     J --> K[VLM Returns JSON: shifts array]
-    K --> L{Hallucination Check\n> 7 rows?}
+    K --> L{Hallucination Check > 7 rows?}
     
     L -->|Yes| M[Discard, Return Empty]
     L -->|No| N[Parse Each Shift Row]

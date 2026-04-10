@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 COMBINED_DIR = os.path.join(OUTPUT_DIR, "combined")
-BENCH_OUTPUT = os.path.join(COMBINED_DIR, "benchmark_combined_v2.xlsx")
+BENCH_OUTPUT = os.path.join(COMBINED_DIR, "benchmark_combined.xlsx")
 GROUND_TRUTH_PATH = os.path.join(PROJECT_ROOT, "ground_truth.xlsx")
 
 HOURS_TOLERANCE = 0.25
@@ -34,6 +34,7 @@ APPROACHES = [
     ("vlm_full_page", "VLM Full", "D6E4F0"),
     ("layout_guided_vlm_local", "Layout Local", "FFF2CC"),
     ("layout_guided_vlm_cloud", "Layout Cloud", "FCE4EC"),
+    ("band_crop_vlm_cloud", "Band-Crop VLM", "F3E5F5"),
 ]
 
 HEADER_FONT = Font(bold=True, size=11, color="FFFFFF")
@@ -951,6 +952,258 @@ def create_time_comparison(ws, row, all_data, ground_truth):
         ws.column_dimensions[get_column_letter(i)].width = 20
 
 
+# ── Sheet 4: IEEE Paper Results ──────────────────────────────────────
+
+# Static metadata per approach — used for privacy / cost metrics
+APPROACH_META = {
+    "ocr_only": {
+        "phi_transmitted_pct": 0,        # No cloud calls
+        "cloud_api_calls": 0,
+        "model_type": "Local (PP-OCRv5)",
+        "model_params": "~3M",
+    },
+    "ppocr_grid": {
+        "phi_transmitted_pct": 0,        # Local Ollama only
+        "cloud_api_calls": 0,
+        "model_type": "Local (PP-OCRv5 + Qwen2.5VL)",
+        "model_params": "~10B",
+    },
+    "vlm_full_page": {
+        "phi_transmitted_pct": 0,        # Local Ollama only
+        "cloud_api_calls": 0,
+        "model_type": "Local (Qwen2.5VL)",
+        "model_params": "~7B",
+    },
+    "layout_guided_vlm_local": {
+        "phi_transmitted_pct": 0,        # Local Ollama only
+        "cloud_api_calls": 0,
+        "model_type": "Local (PP-DocLayoutV3 + Qwen2.5VL)",
+        "model_params": "~10B",
+    },
+    "layout_guided_vlm_cloud": {
+        "phi_transmitted_pct": 100,      # Full table crop → Gemini
+        "cloud_api_calls": 1,            # 1 Gemini call per page
+        "model_type": "Cloud (Gemini + PP-DocLayoutV3)",
+        "model_params": "Cloud + ~22M",
+    },
+    "band_crop_vlm_cloud": {
+        "phi_transmitted_pct": 15,       # Only DATE + footer bands (~15% of full crop)
+        "cloud_api_calls": 1,            # 1 Gemini call per page
+        "model_type": "Cloud (Gemini + PP-DocLayoutV3)",
+        "model_params": "Cloud + ~22M",
+    },
+}
+
+
+def create_ieee_paper(ws, row, all_data, ground_truth):
+    """Create publication-ready results sheet for IEEE paper.
+
+    Three sections: Performance, Accuracy, Quality & Privacy.
+    Reads only from already-loaded data — no file I/O.
+    """
+    ws.cell(row=row, column=1,
+            value="IEEE Paper Results — Comparative OCR Evaluation").font = Font(bold=True, size=14)
+    row += 1
+    ws.cell(row=row, column=1,
+            value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}").font = Font(italic=True, size=10)
+    row += 2
+
+    # ── Section A: Performance ──
+    ws.cell(row=row, column=1, value="A. PERFORMANCE METRICS").font = Font(bold=True, size=12)
+    ws.cell(row=row, column=1).fill = SECTION_FILL
+    row += 1
+
+    perf_headers = ["Metric"] + [d["label"] for d in all_data.values()]
+    for c, h in enumerate(perf_headers, 1):
+        cell = ws.cell(row=row, column=c, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    row += 1
+
+    perf_metrics = [
+        ("Total Processing Time (s)", lambda folder, s: s.get("Total Processing Time (s)", "N/A")),
+        ("Pages Processed", lambda folder, s: s.get("Number of Pages", "N/A")),
+        ("Rows Extracted", lambda folder, s: s.get("Total Rows Extracted", "N/A")),
+        ("Per-Page Time (s)", lambda folder, s: _safe_div(
+            s.get("Total Processing Time (s)"), s.get("Number of Pages"))),
+        ("Per-Row Time (ms)", lambda folder, s: _safe_div(
+            s.get("Total Processing Time (s)"), s.get("Total Rows Extracted"), multiplier=1000)),
+        ("VLM Fallbacks Triggered", lambda folder, s: s.get("VLM Fallbacks Triggered", "N/A")),
+        ("Model Type", lambda folder, s: APPROACH_META.get(folder, {}).get("model_type", "")),
+        ("Model Parameters", lambda folder, s: APPROACH_META.get(folder, {}).get("model_params", "")),
+    ]
+
+    for label, fn in perf_metrics:
+        ws.cell(row=row, column=1, value=label).border = THIN_BORDER
+        for i, (folder, d) in enumerate(all_data.items()):
+            val = fn(folder, d["summary"])
+            if isinstance(val, float):
+                val = round(val, 2)
+            fill = FILLS.get(d.get("_color", ""), None)
+            style_cell(ws, row, i + 2, fill)
+            ws.cell(row=row, column=i + 2, value=val)
+        row += 1
+
+    row += 1
+
+    # ── Section B: Accuracy (vs Ground Truth) ──
+    ws.cell(row=row, column=1, value="B. ACCURACY METRICS (vs Ground Truth)").font = Font(bold=True, size=12)
+    ws.cell(row=row, column=1).fill = SECTION_FILL
+    row += 1
+
+    acc_headers = ["Metric"] + [d["label"] for d in all_data.values()]
+    for c, h in enumerate(acc_headers, 1):
+        cell = ws.cell(row=row, column=c, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    row += 1
+
+    # Pre-compute GT comparison results for each approach
+    gt_results = {}
+    gt_total = len(ground_truth)
+    for folder in all_data:
+        gt_results[folder] = _compare_approach_to_gt(ground_truth, all_data[folder]["rows"])
+
+    acc_metrics = [
+        ("Date Accuracy (exact match %)", lambda folder: gt_results[folder]["date_accuracy"]),
+        ("Hours Accuracy (±15 min %)", lambda folder: gt_results[folder]["hours_accuracy"]),
+        ("Time-In Accuracy (±30 min %)", lambda folder: gt_results[folder]["time_in_accuracy"]),
+        ("Time-Out Accuracy (±30 min %)", lambda folder: gt_results[folder]["time_out_accuracy"]),
+        ("Fully Correct (all 3 fields)", lambda folder: gt_results[folder]["fully_correct_count"]),
+        ("Partially Correct", lambda folder: gt_results[folder]["partial_count"]),
+        ("Not Extracted", lambda folder: gt_results[folder]["missed_count"]),
+        ("Row Precision (TP / predicted)", lambda folder: _precision(gt_results[folder])),
+        ("Row Recall (TP / actual)", lambda folder: _recall(gt_results[folder])),
+        ("Row F1 Score", lambda folder: _f1(gt_results[folder])),
+        ("Mean Character Error Rate", lambda folder, s="": s.get("Mean Character Error Rate", "N/A")),
+        ("Min Character Error Rate", lambda folder, s="": s.get("Min Character Error Rate", "N/A")),
+    ]
+
+    for label, fn in acc_metrics:
+        ws.cell(row=row, column=1, value=label).border = THIN_BORDER
+        for i, (folder, d) in enumerate(all_data.items()):
+            if "Mean Character" in label or "Min Character" in label:
+                val = fn(folder, d["summary"])
+            else:
+                val = fn(folder)
+            fill = FILLS.get(d.get("_color", ""), None)
+            style_cell(ws, row, i + 2, fill)
+            ws.cell(row=row, column=i + 2, value=val)
+        row += 1
+
+    row += 1
+
+    # ── Section C: Quality & Privacy ──
+    ws.cell(row=row, column=1, value="C. QUALITY & PRIVACY METRICS").font = Font(bold=True, size=12)
+    ws.cell(row=row, column=1).fill = SECTION_FILL
+    row += 1
+
+    qual_headers = ["Metric"] + [d["label"] for d in all_data.values()]
+    for c, h in enumerate(qual_headers, 1):
+        cell = ws.cell(row=row, column=c, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        cell.border = THIN_BORDER
+    row += 1
+
+    qual_metrics = [
+        ("False Accept Rate", lambda folder: _false_accept_rate(gt_results[folder])),
+        ("False Reject Rate", lambda folder: _false_reject_rate(gt_results[folder])),
+        ("Hallucination Rate", lambda folder: _hallucination_rate(gt_results[folder])),
+        ("Duplicate Extractions", lambda folder: gt_results[folder]["duplicate_count"]),
+        ("Extra Rows (not in GT)", lambda folder: gt_results[folder]["extra_count"]),
+        ("PHI Transmitted to Cloud (%)", lambda folder: APPROACH_META.get(folder, {}).get("phi_transmitted_pct", "")),
+        ("Cloud API Calls per Page", lambda folder: APPROACH_META.get(folder, {}).get("cloud_api_calls", "")),
+    ]
+
+    for label, fn in qual_metrics:
+        ws.cell(row=row, column=1, value=label).border = THIN_BORDER
+        for i, (folder, d) in enumerate(all_data.items()):
+            val = fn(folder)
+            fill = FILLS.get(d.get("_color", ""), None)
+            style_cell(ws, row, i + 2, fill)
+            ws.cell(row=row, column=i + 2, value=val)
+        row += 1
+
+    # Column widths
+    ws.column_dimensions["A"].width = 34
+    for i in range(2, len(perf_headers) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 24
+
+
+# ── IEEE helper functions ─────────────────────────────────────────────
+
+def _safe_div(num, den, multiplier=1):
+    if num is None or den is None:
+        return "N/A"
+    try:
+        n = float(num)
+        d = float(den)
+        if d == 0:
+            return "N/A"
+        return round((n / d) * multiplier, 2)
+    except (ValueError, TypeError):
+        return "N/A"
+
+
+def _precision(gt_result):
+    """TP / (TP + FP) — of predicted rows, % that match GT."""
+    matched = gt_result["matched_count"]
+    extra = gt_result["extra_count"]
+    total = matched + extra
+    return f"{matched}/{total} ({matched/total*100:.1f}%)" if total > 0 else "N/A"
+
+
+def _recall(gt_result):
+    """TP / (TP + FN) — of GT rows, % that were extracted."""
+    matched = gt_result["matched_count"]
+    gt_total = matched + gt_result["missed_count"]
+    return f"{matched}/{gt_total} ({matched/gt_total*100:.1f}%)" if gt_total > 0 else "N/A"
+
+
+def _f1(gt_result):
+    prec_n = gt_result["matched_count"]
+    prec_d = prec_n + gt_result["extra_count"]
+    rec_n = gt_result["matched_count"]
+    rec_d = rec_n + gt_result["missed_count"]
+    if prec_d == 0 or rec_d == 0:
+        return "N/A"
+    prec = prec_n / prec_d
+    rec = rec_n / rec_d
+    if prec + rec == 0:
+        return "N/A"
+    f1 = 2 * prec * rec / (prec + rec)
+    return round(f1, 4)
+
+
+def _false_accept_rate(gt_result):
+    """Of accepted rows, % that are actually wrong."""
+    fa = gt_result["false_accepts"]
+    correct = gt_result["fully_correct_count"]
+    total_accepted = correct + fa
+    return f"{fa}/{total_accepted} ({fa/total_accepted*100:.1f}%)" if total_accepted > 0 else "N/A"
+
+
+def _false_reject_rate(gt_result):
+    """Of fully correct rows, % that were flagged/failed."""
+    missed = gt_result["missed_accepts"]
+    fully = gt_result["fully_correct_count"]
+    total = fully + missed
+    return f"{missed}/{total} ({missed/total*100:.1f}%)" if total > 0 else "N/A"
+
+
+def _hallucination_rate(gt_result):
+    """Of extracted rows, % that are not in GT."""
+    extra = gt_result["extra_count"]
+    total = gt_result["total_approach_rows"]
+    return f"{extra}/{total} ({extra/total*100:.1f}%)" if total > 0 else "N/A"
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
@@ -995,6 +1248,11 @@ def main():
         ws3 = wb.create_sheet("Time Comparison")
         create_time_comparison(ws3, 1, all_data, ground_truth)
         print("Created 'Time Comparison' sheet")
+
+    # Sheet 4: IEEE Paper Results (always created — Section A works without GT)
+    ws4 = wb.create_sheet("IEEE Paper Results")
+    create_ieee_paper(ws4, 1, all_data, ground_truth if ground_truth else [])
+    print("Created 'IEEE Paper Results' sheet")
 
     wb.save(BENCH_OUTPUT)
     print(f"\nSaved: {BENCH_OUTPUT}")

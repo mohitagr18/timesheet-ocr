@@ -94,7 +94,7 @@ class DebugConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    extraction_mode: str = "vlm_full_page"  # "ppocr_grid" | "vlm_full_page" | "ocr_only" | "layout_guided_vlm_local" | "layout_guided_vlm_cloud"
+    extraction_mode: str = "vlm_full_page"  # "ppocr_grid" | "vlm_full_page" | "ocr_only" | "layout_guided_vlm_local" | "layout_guided_vlm_cloud" | "band_crop_vlm_cloud"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
     ppocr: PpocrConfig = Field(default_factory=PpocrConfig)
