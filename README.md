@@ -54,12 +54,12 @@ graph TD
 
 | # | Approach | Mode | Description | Speed | Best For |
 |---|----------|------|-------------|-------|----------|
-| 1 | **OCR Only** | `ocr_only` | PaddleOCR grid extraction with zero VLM involvement. Empty cells stay empty. | ⚡⚡⚡ Fastest | Baseline comparison, printed forms |
-| 2 | **OCR + VLM Fallback** | `ppocr_grid` | PaddleOCR grid extraction with per-cell VLM fallback on low confidence. | ⚡⚡ Fast | Standardized forms, privacy-first |
+| 1 | **OCR Only** | `ocr_only` | PaddleOCR grid extraction with zero VLM involvement. Empty cells stay empty. | ⚡⚡ Fast | Baseline comparison, printed forms |
+| 2 | **OCR + VLM Fallback** | `ppocr_grid` | PaddleOCR grid extraction with per-cell VLM fallback on low confidence. | ⚡⚡ Moderate | Standardized forms, privacy-first |
 | 3 | **VLM Full Page** | `vlm_full_page` | Entire page sent to local VLM for structured JSON extraction. | ⚡ Slow | Messy layouts, cursive handwriting |
 | 4 | **Layout-Guided VLM (Local)** | `layout_guided_vlm_local` | PP-DocLayoutV3 detects table zone, crops it, sends to local VLM. | ⚡ Slow | Balance of accuracy + privacy |
 | 5 | **Layout-Guided VLM (Cloud)** | `layout_guided_vlm_cloud` | PP-DocLayoutV3 detects table zone, crops it, sends to cloud VLM (Gemini). | ⚡⚡ Moderate | Maximum accuracy, API available |
-| 6 | **Band-Crop VLM (Cloud)** | `band_crop_vlm_cloud` | PP-DocLayoutV3 detects table, then surgical two-band crop (DATE row + footer block) — only billing fields transmitted to Gemini. Zero clinical PHI sent to cloud. | ⚡⚡ Moderate | Maximum accuracy + strongest PHI compliance |
+| 6 | **Band-Crop VLM (Cloud)** | `band_crop_vlm_cloud` | PP-DocLayoutV3 detects table, then surgical two-band crop (DATE row + footer block) — only billing fields transmitted to Gemini. Zero clinical PHI sent to cloud. | ⚡⚡⚡ Fastest | Maximum accuracy + strongest PHI compliance |
 
 ### Workflow Diagrams
 
