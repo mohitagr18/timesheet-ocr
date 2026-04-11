@@ -300,6 +300,43 @@ All benchmark outputs use anonymized names. Original data remains in `output/{ap
 
 ---
 
+## 📋 Monitoring & Logs
+
+All batch runs write logs to the `logs/` directory:
+
+| File | Contents | When to Use |
+|------|----------|-------------|
+| `logs/batch_run_YYYYMMDD_HHMMSS.log` | Full detailed log of every page, file, and approach | Post-run debugging |
+| `logs/latest.log` | Symlink that always points to the most recent log | Live monitoring during a run |
+
+### Watch a Live Run
+
+```bash
+tail -f logs/latest.log
+```
+
+### Check for Errors After a Run
+
+```bash
+grep -E "ERROR|FAILED" logs/latest.log
+```
+
+### Run State File
+
+After every completed approach, the script writes progress to `output/.run_state.json`. This file tracks which approaches are fully done. If the machine shuts down mid-run, use `--resume` to pick up from the last completed approach:
+
+```bash
+uv run python scripts/run_all_approaches_safe.py --resume
+```
+
+> **Note:** Resume is per-approach, not per-file. If a run is interrupted mid-approach, that approach will restart from its first file.
+
+### Per-File Status
+
+At the end of each approach run, the terminal prints a per-file summary showing `✓` (success) or `✗` (failed) for every input file. The same information is written to `reports/report_YYYYMMDD_HHMMSS.txt` for a persistent audit trail.
+
+---
+
 ## 📝 Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
