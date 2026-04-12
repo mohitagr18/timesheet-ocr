@@ -22,7 +22,7 @@ extraction_mode: band_crop_vlm_cloud
 # ── File paths ────────────────────────────────────────────────────────
 paths:
   input_dir: input # Directory containing input PDF/image files
-  output_dir: output/band_crop_vlm_cloud # Where results are written
+  output_dir: output # Where results are written
   samples_dir: samples # Reference sample images (not used in pipeline)
 
 # ── Confidence thresholds ────────────────────────────────────────────
