@@ -483,6 +483,10 @@ class Pipeline:
         anonymizer: PhiAnonymizer,
     ) -> tuple[TimesheetRecord, PageMetrics]:
         """Process a single page image through OCR + validation."""
+        if getattr(self.config, "debug", None):
+            # Only generate debug images for this exact file
+            self.config.debug.visualize_ocr = (source_file == "N.Rivera Timesheets -030426-031026.pdf")
+
         page_metrics = PageMetrics(source_file=anon_filename, page_number=page_number)
 
         preprocess_start = time_module.time()
