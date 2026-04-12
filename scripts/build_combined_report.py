@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build complete combined benchmark report from all 7 approaches.
+"""Build complete combined benchmark report from all 6 approaches.
 
 Reads merged_results.xlsx from each approach folder + ground_truth.xlsx,
 computes all metrics (hours mismatch, field missing, CER, GT accuracy,
@@ -42,8 +42,7 @@ APPROACHES = [
     ("layout_guided_vlm_local", "Layout Local", "FFF2CC"),
     ("layout_guided_vlm_cloud", "Layout Cloud", "FCE4EC"),
     ("band_crop_vlm_cloud", "Band-Crop VLM", "F3E5F5"),
-      ("field_band_crop_v11", "Field Band-Crop", "E8D5F5"),
-]
+    ]
 
 FILLS = {}
 for aid, _, color in APPROACHES:
