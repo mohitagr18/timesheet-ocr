@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build complete combined benchmark report from all 6 approaches.
+"""Build complete combined benchmark report from all 7 approaches.
 
 Reads merged_results.xlsx from each approach folder + ground_truth.xlsx,
 computes all metrics (hours mismatch, field missing, CER, GT accuracy,
@@ -42,6 +42,7 @@ APPROACHES = [
     ("layout_guided_vlm_local", "Layout Local", "FFF2CC"),
     ("layout_guided_vlm_cloud", "Layout Cloud", "FCE4EC"),
     ("band_crop_vlm_cloud", "Band-Crop VLM", "F3E5F5"),
+      ("field_band_crop_v11", "Field Band-Crop", "E8D5F5"),
 ]
 
 FILLS = {}
@@ -142,22 +143,30 @@ def _anon_source(source):
     return str(source)
 
 
-def _levenshtein_cer(s1, s2):
-    if not s1 and not s2:
-        return 0.0
-    m, n = len(s1), len(s2)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(m + 1):
-        dp[i][0] = i
-    for j in range(n + 1):
-        dp[0][j] = j
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if s1[i - 1] == s2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
-            else:
-                dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-    return dp[m][n] / max(len(s1), len(s2))
+def _compute_precision(data):
+    """Accepted & Fully Correct / Total Accepted — trustworthiness of accepted rows."""
+    matched = data["gt"].get("matched_list", [])
+    accepted_rows = [m for m in matched if m.get("_status") == "accepted" and not m.get("_not_extracted")]
+    if not accepted_rows:
+        return "N/A"
+    correct_and_accepted = sum(1 for m in accepted_rows if m.get("_fully_correct", False))
+    return f"{correct_and_accepted/len(accepted_rows)*100:.1f}%"
+
+def _compute_recall(data, gt):
+    """Fully Correct / Total GT Rows — how much of the data was correctly captured."""
+    total_gt = len(gt)
+    if total_gt == 0:
+        return "N/A"
+    fc = data["gt"].get("fully_correct_count", 0)
+    return f"{fc/total_gt*100:.1f}%"
+
+def _compute_hallucination_rate(data):
+    """Extra Rows (not in GT) / Total Extracted — how often the model invents rows."""
+    rows = data["rows"]
+    if not rows:
+        return "N/A"
+    extra = len(data["gt"].get("extra", []))
+    return f"{extra/len(rows)*100:.1f}%"
 
 
 def _style_cell(ws, row, col, fill=None):
