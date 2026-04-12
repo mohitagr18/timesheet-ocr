@@ -3,13 +3,11 @@
 
 Reads merged_results.xlsx from each approach folder + ground_truth.xlsx,
 computes all metrics (hours mismatch, field missing, CER, GT accuracy,
-consensus/KPIs), and writes a single benchmark_combined.xlsx with 6 sheets:
+consensus/KPIs), and writes a single benchmark_combined.xlsx with 4 sheets:
   1. Approach Comparison (with GT rows)
   2. Human-Verified Results
-  3. Time Comparison
-  4. IEEE Paper Results
-  5. KPI Dashboard
-  6. Per-Row Detail
+  3. IEEE Paper Results (incl. False/Missed Accepts)
+    4. Per-Row Detail
 
 Backs up existing file before overwriting.
 
@@ -759,29 +757,16 @@ def main():
         _write_human_verified(ws2, all_data, gt)
         print("Created 'Human-Verified Results' sheet")
 
-    # Sheet 3: Time Comparison (simplified — same as Human-Verified but focused on time)
+    # Sheet 3: IEEE Paper Results
     if gt:
-        ws3 = wb.create_sheet("Time Comparison")
-        # Reuse human_verified for now; can be customized
-        _write_human_verified(ws3, all_data, gt)
-        print("Created 'Time Comparison' sheet")
-
-    # Sheet 4: IEEE Paper Results
-    if gt:
-        ws4 = wb.create_sheet("IEEE Paper Results")
-        _write_ieee_paper(ws4, all_data, gt)
+        ws3 = wb.create_sheet("IEEE Paper Results")
+        _write_ieee_paper(ws3, all_data, gt)
         print("Created 'IEEE Paper Results' sheet")
 
-    # Sheet 5: KPI Dashboard
+    # Sheet 4: Per-Row Detail
     if gt:
-        ws5 = wb.create_sheet("KPI Dashboard")
-        _write_kpi_dashboard(ws5, all_data, gt)
-        print("Created 'KPI Dashboard' sheet")
-
-    # Sheet 6: Per-Row Detail
-    if gt:
-        ws6 = wb.create_sheet("Per-Row Detail")
-        _write_per_row_detail(ws6, all_data, gt)
+        ws4 = wb.create_sheet("Per-Row Detail")
+        _write_per_row_detail(ws4, all_data, gt)
         print("Created 'Per-Row Detail' sheet")
 
     wb.save(COMBINED_PATH)
