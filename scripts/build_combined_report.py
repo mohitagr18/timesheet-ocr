@@ -418,7 +418,9 @@ def _write_approach_comparison(ws, all_data):
         ("GT Rows Not Found", lambda a: str(d[a]['gt']['gt_not_found'])),
         ("Field Missing Rate", lambda a: _compute_field_missing(d[a])),
         ("Mean CER", lambda a: _compute_mean_cer(d[a])),
-    ]
+                    ("False Accepts", lambda a: str(d[a]['gt']['false_accepts'])),
+        ("Missed Accepts", lambda a: str(d[a]['gt']['missed_accepts'])),
+]
 
     for label, fn in metrics_list:
         ws.cell(row=row, column=1, value=label).border = THIN_BORDER
@@ -435,19 +437,12 @@ def _write_approach_comparison(ws, all_data):
 
 
 def _compute_hours_mismatch(data):
-    rows = data["rows"]
-    total = sum(1 for r in rows if r.get("Total Hours") and r.get("Calculated Hours"))
-    mismatch = 0
-    for r in rows:
-        w, c = r.get("Total Hours"), r.get("Calculated Hours")
-        if w and c is not None:
-            try:
-                if abs(float(c) - float(w)) > HOURS_TOL:
-                    mismatch += 1
-            except (ValueError, TypeError):
-                pass
-    return f"{mismatch/total*100:.1f}%" if total > 0 else "0.0%"
-
+    matched = data["gt"].get("matched_list", [])
+    extracted = [m for m in matched if not m.get("_not_extracted")]
+    if not extracted:
+        return "N/A"
+    mismatch = sum(1 for m in extracted if not m.get("_hours_ok", False))
+    return f"{mismatch/len(extracted)*100:.1f}%"
 
 def _compute_field_missing(data):
     rows = data["rows"]
