@@ -1074,7 +1074,7 @@ class Pipeline:
                 page_metrics.extraction_time_s = time_module.time() - extraction_start
                 page_metrics.rows_extracted = len(rows)
                 page_metrics.empty_rows_skipped = empty_rows
-                page_metrics.vlm_fallbacks = 0
+                page_metrics.vlm_fallbacks = total_vlm_fallbacks
 
                 if (
                     getattr(self.config, "debug", None)

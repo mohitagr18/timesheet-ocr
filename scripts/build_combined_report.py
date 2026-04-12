@@ -168,6 +168,15 @@ def _compute_hallucination_rate(data):
     return f"{extra/len(rows)*100:.1f}%"
 
 
+def _compute_duplicate_rate(data):
+    """Duplicate Rows / Total Extracted %."""
+    rows = data["rows"]
+    if not rows:
+        return "N/A"
+    dups = len(data["gt"].get("duplicates", []))
+    return f"{dups/len(rows)*100:.1f}%"
+
+
 def _style_cell(ws, row, col, fill=None):
     cell = ws.cell(row=row, column=col)
     cell.border = THIN_BORDER
@@ -387,7 +396,7 @@ def compute_gt_metrics(rows, gt):
 
 # ── Sheet writers ────────────────────────────────────────────────────
 
-def _write_approach_comparison(ws, all_data):
+def _write_approach_comparison(ws, all_data, gt):
     row = 1
     ws.cell(row=row, column=1, value="Approach Comparison: Handwritten Timesheet OCR").font = Font(bold=True, size=14)
     row += 1
@@ -414,8 +423,6 @@ def _write_approach_comparison(ws, all_data):
         ("Accepted Rows", lambda a: str(d[a]['summary'].get('Accepted Rows', 0))),
         ("Flagged Rows", lambda a: str(d[a]['summary'].get('Flagged Rows', 0))),
         ("Failed Rows", lambda a: str(d[a]['summary'].get('Failed Rows', 0))),
-        ("Mean Confidence", lambda a: str(round(d[a]['summary'].get('Mean Overall Confidence', 0), 4))),
-        ("Min Confidence", lambda a: str(round(d[a]['summary'].get('Min Overall Confidence', 0), 4))),
         ("VLM Fallbacks Triggered", lambda a: str(d[a]['summary'].get('VLM Fallbacks Triggered', 0))),
         ("Hours Mismatch Rate", lambda a: _compute_hours_mismatch(d[a])),
         ("GT Hours Accuracy (±15min)", lambda a: f"{d[a]['gt']['gt_h']*100:.1f}%" if d[a]['gt']['gt_h'] > 0 else "N/A"),
@@ -425,10 +432,11 @@ def _write_approach_comparison(ws, all_data):
         ("GT Rows Matched", lambda a: str(d[a]['gt']['gt_matched'])),
         ("GT Rows Not Found", lambda a: str(d[a]['gt']['gt_not_found'])),
         ("Field Missing Rate", lambda a: _compute_field_missing(d[a])),
-        ("Mean CER", lambda a: _compute_mean_cer(d[a])),
-                    ("False Accepts", lambda a: str(d[a]['gt']['false_accepts'])),
-        ("Missed Accepts", lambda a: str(d[a]['gt']['missed_accepts'])),
-]
+        ("Precision", lambda a: _compute_precision(d[a])),
+        ("Recall", lambda a: _compute_recall(d[a], gt)),
+        ("Hallucination Rate", lambda a: _compute_hallucination_rate(d[a])),
+        ("Duplicate Rate", lambda a: _compute_duplicate_rate(d[a])),
+    ]
 
     for label, fn in metrics_list:
         ws.cell(row=row, column=1, value=label).border = THIN_BORDER
@@ -751,7 +759,7 @@ def main():
     # Sheet 1: Approach Comparison
     ws1 = wb.active
     ws1.title = "Approach Comparison"
-    _write_approach_comparison(ws1, all_data)
+    _write_approach_comparison(ws1, all_data, gt)
     print("\nCreated 'Approach Comparison' sheet")
 
     # Sheet 2: Human-Verified Results
@@ -803,7 +811,8 @@ def _write_ieee_paper(ws, all_data, gt):
         ("Pages Processed", lambda a: str(d[a]['summary'].get('Number of Pages', 0))),
         ("Rows Extracted", lambda a: str(d[a]['summary'].get('Total Rows Extracted', 0))),
         ("VLM Fallbacks", lambda a: str(d[a]['summary'].get('VLM Fallbacks Triggered', 0))),
-        ("Mean CER", lambda a: _compute_mean_cer(d[a])),
+        ("Avg Time per Page (s)", lambda a: f"{d[a]['summary'].get('Total Processing Time (s)', 0) / max(d[a]['summary'].get('Number of Pages', 1), 1):.2f}"),
+        ("Accepted Rate", lambda a: f"{d[a]['summary'].get('Accepted Rows', 0) / max(d[a]['summary'].get('Total Rows Extracted', 1), 1)*100:.1f}%"),
     ]
     for label, fn in perf_metrics:
         ws.cell(row=row, column=1, value=label).border = THIN_BORDER
@@ -836,6 +845,7 @@ def _write_ieee_paper(ws, all_data, gt):
         ("GT Fully Correct Rate", lambda a: f"{d[a]['gt']['gt_fc']*100:.1f}%" if d[a]['gt']['gt_fc'] > 0 else "N/A"),
         ("Rows Matched", lambda a: str(d[a]['gt']['gt_matched'])),
         ("Rows Not Found", lambda a: str(d[a]['gt']['gt_not_found'])),
+        ("Fully Correct Count", lambda a: str(d[a]['gt']['fully_correct_count'])),
     ]
     for label, fn in acc_metrics:
         ws.cell(row=row, column=1, value=label).border = THIN_BORDER
@@ -868,6 +878,9 @@ def _write_ieee_paper(ws, all_data, gt):
         ("Missed Accepts", lambda a: str(d[a]['gt']['missed_accepts'])),
         ("Duplicate Extractions", lambda a: str(len(d[a]['gt']['duplicates']))),
         ("Extra Rows (not in GT)", lambda a: str(len(d[a]['gt']['extra']))),
+        ("Hallucination Rate", lambda a: _compute_hallucination_rate(d[a])),
+        ("Precision", lambda a: _compute_precision(d[a])),
+        ("Recall", lambda a: _compute_recall(d[a], gt)),
     ]
     for label, fn in qual_metrics:
         ws.cell(row=row, column=1, value=label).border = THIN_BORDER
