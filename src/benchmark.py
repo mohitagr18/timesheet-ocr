@@ -112,6 +112,14 @@ class RunMetrics:
     field_missing_rate: float = 0.0
     mean_cer: float = 0.0  # Character Error Rate (if ground truth available)
 
+    # Ground truth accuracy metrics
+    gt_hours_accuracy: float = 0.0
+    gt_time_in_accuracy: float = 0.0
+    gt_time_out_accuracy: float = 0.0
+    gt_fully_correct_rate: float = 0.0
+    gt_rows_matched: int = 0
+    gt_rows_not_found: int = 0
+
 
 class BenchmarkCollector:
     """Collects and exports benchmark metrics during pipeline execution."""
@@ -229,6 +237,11 @@ class BenchmarkCollector:
 
         self.run.mean_cer = sum(cer_values) / len(cer_values) if cer_values else 0.0
 
+        # Ground truth accuracy metrics
+        project_root = Path(__file__).resolve().parent.parent
+        gt_path = project_root / "ground_truth.xlsx"
+        _compute_ground_truth(self.rows, gt_path, self.run)
+
     def export(self, output_dir: Path) -> Path:
         """Export benchmark results to a standalone Excel file."""
         from openpyxl import Workbook
@@ -297,6 +310,187 @@ class BenchmarkCollector:
         wb.save(combined_path)
         logger.info(f"Combined benchmark exported: {combined_path}")
         return combined_path
+
+
+def _compute_ground_truth(
+    rows: list[RowMetrics], gt_path: Path, run: RunMetrics
+) -> None:
+    """Compute ground truth accuracy metrics and populate run fields.
+
+    Matching is by (source_file, date) pair — NOT by row order.
+    If ground_truth.xlsx does not exist, fields stay 0.0 and a warning is logged.
+    Never raises — the pipeline must not crash due to missing ground truth.
+    """
+    HOURS_TOL = 0.25  # ±15 minutes
+    TIME_TOL = 30  # ±30 minutes
+
+    if not gt_path.exists():
+        logger.warning(
+            f"Ground truth file not found: {gt_path}. "
+            f"GT accuracy metrics will be 0.0."
+        )
+        return
+
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(gt_path, read_only=True, data_only=True)
+        ws = wb.active
+        header = None
+        gt_by_key = {}
+        for r in ws.iter_rows(values_only=True):
+            if header is None:
+                header = [str(c).strip() if c else "" for c in r]
+                continue
+            rec = dict(zip(header, r))
+            source = str(rec.get("source_file", "")).strip()
+            date_val = _parse_date_gt(rec.get("date"))
+            if source and date_val:
+                key = (source, date_val)
+                gt_by_key[key] = rec
+        wb.close()
+    except Exception as e:
+        logger.warning(f"Failed to load ground truth from {gt_path}: {e}")
+        return
+
+    if not gt_by_key:
+        logger.warning("Ground truth file has no valid rows.")
+        return
+
+    # Build approach rows lookup by (source_file, date)
+    approach_by_key = {}
+    for r in rows:
+        source = r.source_file
+        date_val = _parse_date_gt(r.parsed_date)
+        if source and date_val:
+            key = (source, date_val)
+            approach_by_key.setdefault(key, []).append(r)
+
+    gt_matched = 0
+    gt_not_found = 0
+    hours_ok = 0
+    time_in_ok = 0
+    time_out_ok = 0
+    fully_correct = 0
+
+    for gt_key, gt_rec in gt_by_key.items():
+        candidates = approach_by_key.get(gt_key, [])
+        if not candidates:
+            gt_not_found += 1
+            continue
+
+        # Pick best candidate (closest hours, then time_in, then time_out)
+        scored = []
+        for ar in candidates:
+            ar_hours = _parse_float(ar.parsed_hours)
+            ar_ti_min = _parse_time_min(ar.raw_ocr_time_in)
+            ar_to_min = _parse_time_min(ar.raw_ocr_time_out)
+
+            gt_hours = _parse_float(gt_rec.get("total_hours"))
+            gt_ti_min = _parse_time_min(gt_rec.get("time_in"))
+            gt_to_min = _parse_time_min(gt_rec.get("time_out"))
+
+            h_dist = abs(ar_hours - gt_hours) if (ar_hours is not None and gt_hours is not None) else 999
+            ti_dist = abs(ar_ti_min - gt_ti_min) if (ar_ti_min is not None and gt_ti_min is not None) else 9999
+            to_dist = abs(ar_to_min - gt_to_min) if (ar_to_min is not None and gt_to_min is not None) else 9999
+
+            score = h_dist * 1000 + ti_dist + to_dist * 0.01
+            scored.append((score, ar))
+
+        scored.sort(key=lambda x: x[0])
+        best = scored[0][1]
+
+        gt_matched += 1
+
+        # Check field-level accuracy
+        best_hours = _parse_float(best.parsed_hours)
+        best_ti = _parse_time_min(best.raw_ocr_time_in)
+        best_to = _parse_time_min(best.raw_ocr_time_out)
+        gt_hours = _parse_float(gt_rec.get("total_hours"))
+        gt_ti_min = _parse_time_min(gt_rec.get("time_in"))
+        gt_to_min = _parse_time_min(gt_rec.get("time_out"))
+
+        h_ok = best_hours is not None and gt_hours is not None and abs(best_hours - gt_hours) <= HOURS_TOL
+        ti_ok = best_ti is not None and gt_ti_min is not None and abs(best_ti - gt_ti_min) <= TIME_TOL
+        to_ok = best_to is not None and gt_to_min is not None and abs(best_to - gt_to_min) <= TIME_TOL
+
+        if h_ok:
+            hours_ok += 1
+        if ti_ok:
+            time_in_ok += 1
+        if to_ok:
+            time_out_ok += 1
+        if h_ok and ti_ok and to_ok:
+            fully_correct += 1
+
+    if gt_matched > 0:
+        run.gt_hours_accuracy = hours_ok / gt_matched
+        run.gt_time_in_accuracy = time_in_ok / gt_matched
+        run.gt_time_out_accuracy = time_out_ok / gt_matched
+        run.gt_fully_correct_rate = fully_correct / gt_matched
+    run.gt_rows_matched = gt_matched
+    run.gt_rows_not_found = gt_not_found
+
+
+def _parse_date_gt(val) -> str | None:
+    """Parse a date value to YYYY-MM-DD string for matching."""
+    if val is None:
+        return None
+    if hasattr(val, "strftime"):
+        return val.strftime("%Y-%m-%d")
+    val = str(val).strip()
+    if not val:
+        return None
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", val)
+    if m:
+        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", val)
+    if m:
+        return val
+    return val
+
+
+def _parse_float(val) -> float | None:
+    """Parse a numeric value (hours) to float."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_time_min(val) -> int | None:
+    """Parse a time string to minutes since midnight."""
+    if val is None:
+        return None
+    val = str(val).strip()
+    if not val:
+        return None
+    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?", val)
+    if m:
+        h = int(m.group(1))
+        mi = int(m.group(2))
+        ap = m.group(3)
+        if ap and ap.lower() == "pm" and h != 12:
+            h += 12
+        elif ap and ap.lower() == "am" and h == 12:
+            h = 0
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return h * 60 + mi
+        return None
+    # Try HHMM format
+    m = re.match(r"(\d{1,2})(\d{2})(?!\d)", val)
+    if m:
+        h = int(m.group(1))
+        mi = int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return h * 60 + mi
+        return None
+    return None
 
 
 def _levenshtein_cer(s1: str, s2: str) -> float:
@@ -380,6 +574,12 @@ def _write_run_summary(ws, run: RunMetrics) -> None:
         ("VLM Fallbacks Triggered", run.vlm_fallbacks_triggered),
         ("Empty Rows Skipped", run.empty_rows_skipped),
         ("Hours Mismatch Rate", f"{run.hours_mismatch_rate * 100:.1f}%"),
+        ("GT Hours Accuracy (±15min)", f"{run.gt_hours_accuracy * 100:.1f}%" if run.gt_hours_accuracy > 0 else "N/A"),
+        ("GT Time-In Accuracy (±30min)", f"{run.gt_time_in_accuracy * 100:.1f}%" if run.gt_time_in_accuracy > 0 else "N/A"),
+        ("GT Time-Out Accuracy (±30min)", f"{run.gt_time_out_accuracy * 100:.1f}%" if run.gt_time_out_accuracy > 0 else "N/A"),
+        ("GT Fully Correct Rate", f"{run.gt_fully_correct_rate * 100:.1f}%" if run.gt_fully_correct_rate > 0 else "N/A"),
+        ("GT Rows Matched", run.gt_rows_matched),
+        ("GT Rows Not Found", run.gt_rows_not_found),
         ("Field Missing Rate", f"{run.field_missing_rate * 100:.1f}%"),
         ("Mean Character Error Rate", round(run.mean_cer, 4)),
     ]
@@ -872,16 +1072,74 @@ def _write_combined_summary(
         value=f"{total_missing / max(total_rows_all, 1) * 100:.1f}%",
     )
 
+    # 24. GT Hours Accuracy
+    ws.cell(row=25, column=1, value="GT Hours Accuracy (±15min)")
+    for i, (run, _, _) in enumerate(runs, 2):
+        val = f"{run.gt_hours_accuracy * 100:.1f}%" if run.gt_hours_accuracy > 0 else "N/A"
+        ws.cell(row=25, column=i, value=val)
+    total_gt_h_ok = 0
+    total_gt_matched_h = 0
+    for _, _, rlist in runs:
+        for r in rlist:
+            if r.parsed_hours and r.raw_ocr_time_in and r.raw_ocr_time_out:
+                total_gt_matched_h += 1
+    ws.cell(
+        row=25,
+        column=len(runs) + 2,
+        value=f"{total_gt_h_ok / max(total_gt_matched_h, 1) * 100:.1f}%" if total_gt_matched_h else "N/A",
+    )
+
+    # 25. GT Time-In Accuracy
+    ws.cell(row=26, column=1, value="GT Time-In Accuracy (±30min)")
+    for i, (run, _, _) in enumerate(runs, 2):
+        val = f"{run.gt_time_in_accuracy * 100:.1f}%" if run.gt_time_in_accuracy > 0 else "N/A"
+        ws.cell(row=26, column=i, value=val)
+    ws.cell(row=26, column=len(runs) + 2, value="—")
+
+    # 26. GT Time-Out Accuracy
+    ws.cell(row=27, column=1, value="GT Time-Out Accuracy (±30min)")
+    for i, (run, _, _) in enumerate(runs, 2):
+        val = f"{run.gt_time_out_accuracy * 100:.1f}%" if run.gt_time_out_accuracy > 0 else "N/A"
+        ws.cell(row=27, column=i, value=val)
+    ws.cell(row=27, column=len(runs) + 2, value="—")
+
+    # 27. GT Fully Correct Rate
+    ws.cell(row=28, column=1, value="GT Fully Correct Rate")
+    for i, (run, _, _) in enumerate(runs, 2):
+        val = f"{run.gt_fully_correct_rate * 100:.1f}%" if run.gt_fully_correct_rate > 0 else "N/A"
+        ws.cell(row=28, column=i, value=val)
+    ws.cell(row=28, column=len(runs) + 2, value="—")
+
+    # 28. GT Rows Matched
+    ws.cell(row=29, column=1, value="GT Rows Matched")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=29, column=i, value=run.gt_rows_matched)
+    ws.cell(
+        row=29,
+        column=len(runs) + 2,
+        value=sum(run.gt_rows_matched for run, _, _ in runs),
+    )
+
+    # 29. GT Rows Not Found
+    ws.cell(row=30, column=1, value="GT Rows Not Found")
+    for i, (run, _, _) in enumerate(runs, 2):
+        ws.cell(row=30, column=i, value=run.gt_rows_not_found)
+    ws.cell(
+        row=30,
+        column=len(runs) + 2,
+        value=sum(run.gt_rows_not_found for run, _, _ in runs),
+    )
+
     # Style the metric column
     metric_font = Font(name="Calibri", bold=True, size=11)
-    for row_idx in range(2, 25):
+    for row_idx in range(2, 31):
         ws.cell(row=row_idx, column=1).font = metric_font
 
     # Auto-fit
     ws.column_dimensions["A"].width = 35
     for col_idx in range(2, len(headers) + 1):
         max_len = len(str(headers[col_idx - 1]))
-        for row_idx in range(2, 25):
+        for row_idx in range(2, 31):
             val = ws.cell(row=row_idx, column=col_idx).value
             if val:
                 max_len = max(max_len, len(str(val)))

@@ -233,3 +233,4 @@ samples/*
 samples/
 
 .DS_Store
+.qwen/
