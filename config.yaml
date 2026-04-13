@@ -1,102 +1,71 @@
-# ──────────────────────────────────────────────────────────────────────
-# Timesheet OCR — Configuration
-# ──────────────────────────────────────────────────────────────────────
-# Edit this file to control pipeline behaviour.
-# All paths are relative to the project root (where config.yaml lives).
-
-# extraction_mode: Which extraction approach to use.
-#   ocr_only               – Pure PaddleOCR, no VLM calls. Fastest but
-#                             struggles with handwriting.
-#   ppocr_grid             – PaddleOCR grid extraction with per-cell
-#                             VLM fallback on low-confidence cells.
-#   vlm_full_page          – Entire page sent to local VLM (Ollama).
-#                             No PaddleOCR involved.
-#   layout_guided_vlm_local– Table zone detected, cropped, and sent to
-#                             local VLM (Ollama/qwen2.5vl).
-#   layout_guided_vlm_cloud– Same as above but uses cloud VLM (Gemini).
-#   band_crop_vlm_cloud    – PP-DocLayoutV3 detects table, then surgical
-#                             two-band crop (DATE row + footer block) —
-#                             only bi1lling fields transmitted to Gemini.
 extraction_mode: band_crop_vlm_cloud
-
-# ── File paths ────────────────────────────────────────────────────────
 paths:
-  input_dir: input # Directory containing input PDF/image files
-  output_dir: output # Where results are written
-  samples_dir: samples # Reference sample images (not used in pipeline)
-
-# ── Confidence thresholds ────────────────────────────────────────────
-#   accept_threshold       – Rows with min confidence ≥ this are auto-accepted.
-#   fallback_threshold     – Rows below this trigger VLM fallback
-#                             (only in ppocr_grid mode).
+  input_dir: input
+  output_dir: output
+  samples_dir: samples
 confidence:
   accept_threshold: 0.9
   fallback_threshold: 0.75
-
-# ── PaddleOCR settings ──────────────────────────────────────────────
 ppocr:
-  lang: en # Language for OCR model
-  use_textline_orientation: false # Set true if pages may be rotated
-  device: cpu # 'cpu' or 'gpu'
-  text_det_thresh: 0.45 # Detection confidence threshold
-  text_rec_batch_size: 4 # Batch size for text recognition
-
-# ── Local VLM (Ollama) settings ──────────────────────────────────────
+  lang: en
+  use_textline_orientation: false
+  device: cpu
+  text_det_thresh: 0.45
+  text_rec_batch_size: 4
 ollama:
-  host: http://localhost:11434 # Ollama server URL
-  model: qwen2.5vl:7b # VLM model to use (run `ollama pull …`)
-  timeout_seconds: 60 # Max time per VLM request
-  max_retries: 2 # Number of retries on failure
-
-# ── Image preprocessing ──────────────────────────────────────────────
+  host: http://localhost:11434
+  model: qwen2.5vl:7b
+  timeout_seconds: 60
+  max_retries: 2
 preprocessing:
-  target_dpi: 400 # DPI for PDF→image conversion
-  denoise: true # Apply denoising filter
-  deskew: false # Auto-deskew pages
-  binarize: false # Convert to black/white
-  adaptive_block_size: 15 # Block size for adaptive thresholding
-  adaptive_c: 3 # Constant subtracted for adaptive threshold
-
-# ── Layout detection zones (fractional coordinates) ─────────────────
-# Zones are [x_min, y_min, x_max, y_max] relative to page size.
-# Used by ppocr_grid to separate header, table, and footer regions.
+  target_dpi: 400
+  denoise: true
+  deskew: false
+  binarize: false
+  adaptive_block_size: 15
+  adaptive_c: 3
 layout:
-  transposed: true # If true, table rows run top→bottom
-  header_zone: [0.0, 0.0, 1.0, 0.16] # Patient / employee info
-  table_zone: [0.24, 0.16, 1.0, 0.98] # Main shift-times grid
-  footer_zone: [0.0, 0.98, 1.0, 1.0] # Signature / totals area
-
-# ── Validation rules ─────────────────────────────────────────────────
+  transposed: true
+  header_zone:
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.16
+  table_zone:
+  - 0.24
+  - 0.16
+  - 1.0
+  - 0.98
+  footer_zone:
+  - 0.0
+  - 0.98
+  - 1.0
+  - 1.0
 validation:
-  max_shift_hours: 16 # Flag shifts longer than this
-  hours_mismatch_tolerance: 0.25 # ±15 minutes tolerance for hours
-  allow_future_dates: false # Flag dates in the future
-  max_days_in_past: 365 # Flag dates older than 1 year
-  week_start_day: 2 # 2=Tuesday (matches agency timesheets)
-  week_length: 7 # Number of days per timesheet week
-
-# ── Export settings ─────────────────────────────────────────────────
+  max_shift_hours: 16
+  hours_mismatch_tolerance: 0.25
+  allow_future_dates: false
+  max_days_in_past: 365
+  week_start_day: 2
+  week_length: 7
 export:
-  formats: [xlsx] # Output formats: xlsx, csv, json
-  excel_sheet_name: Timesheet Data # Sheet name in the Excel output
-  include_review_json: true # Write *_review.json for flagged rows
-  include_report_json: true # Write cumulative *_report.json
-
-# ── Debug / diagnostics ─────────────────────────────────────────────
+  formats:
+  - xlsx
+  excel_sheet_name: Timesheet Data
+  include_review_json: true
+  include_report_json: true
 debug:
-  visualize_ocr: false # Save debug images with OCR overlays
-  output_dir: output/debug # Where debug images are written
-  anonymize_phi: true # Replace real names with Patient_A, etc.
-  signature_zone: 0.3 # Y-threshold for signature detection
-  signature_ocr_threshold: 100 # Pixel threshold for signature zone OCR
-
-# ── Cloud VLM settings ───────────────────────────────────────────────
+  visualize_ocr: false
+  output_dir: output/debug
+  anonymize_phi: true
+  signature_zone: 0.3
+  signature_ocr_threshold: 100
 cloud_vlm:
-  provider: google # 'google' (Gemini)
-  api_key_env: GOOGLE_API_KEY # Env var holding your API key
-  model: gemini-3-flash-preview # Gemini model to use
-  timeout_seconds: 30 # Max time per cloud request
-  media_resolution: high # Image resolution: low, mid, high
-  image_quality: 92 # JPEG quality (0-100)
-  use_color_images: true # Send colour images to VLM
-  inter_file_delay: 5 # Seconds to wait between files (rate limit)
+  provider: google
+  api_key_env: GOOGLE_API_KEY
+  model: gemini-3-flash-preview
+  timeout_seconds: 30
+  media_resolution: high
+  image_quality: 92
+  use_color_images: true
+  inter_file_delay: 5

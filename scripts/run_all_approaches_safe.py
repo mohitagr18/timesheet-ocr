@@ -27,6 +27,8 @@ from pathlib import Path
 
 import yaml
 
+from src.phi import PhiAnonymizer
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 INPUT_DIR = PROJECT_ROOT / "input"
@@ -279,25 +281,7 @@ def run_combined_comparison(logger):
     logger.info(f"{'=' * 70}")
 
     result = subprocess.run(
-        ["python", "scripts/rebuild_combined_report.py"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.stdout:
-        logger.info(result.stdout.strip())
-    if result.stderr:
-        logger.warning(result.stderr.strip())
-
-
-def run_consensus_comparison(logger):
-    """Generate KPI consensus results across all approaches."""
-    logger.info(f"\n{'=' * 70}")
-    logger.info("GENERATING CONSENSUS / KPI RESULTS")
-    logger.info(f"{'=' * 70}")
-
-    result = subprocess.run(
-        ["python", "scripts/create_consensus_results.py"],
+        ["python", "scripts/build_combined_report.py"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -311,9 +295,48 @@ def run_consensus_comparison(logger):
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 
+def is_file_processed_in_approach(approach_id: str, anonymized_stem: str) -> bool:
+    """Check if a file was successfully processed by looking for its anonymized _report.json.
+    
+    The pipeline saves results as <anonymized_stem>_report.json in the approach directory.
+    """
+    approach_dir = OUTPUT_DIR / approach_id
+    report_file = approach_dir / f"{anonymized_stem}_report.json"
+    return report_file.exists()
+
+
+def get_anonymizer_for_files(input_files: list) -> PhiAnonymizer:
+    """Create a PhiAnonymizer instance with all input filenames for consistent mapping."""
+    filenames = [f.name for f in input_files]
+    return PhiAnonymizer(filenames)
+
+
+def get_files_still_needed(approach_id: str, input_files: list, anonymizer: PhiAnonymizer) -> list:
+    """Get list of input files that haven't been successfully processed yet for this approach.
+    
+    Returns the list of files that still need processing (i.e., their anonymized
+    _report.json doesn't exist in the approach directory).
+    """
+    approach_dir = OUTPUT_DIR / approach_id
+    needed = []
+    for f in input_files:
+        anon_name = anonymizer.anonymize_filename(f.name)
+        anon_stem = Path(anon_name).stem
+        if not (approach_dir / f"{anon_stem}_report.json").exists():
+            needed.append(f)
+    return needed
+
+
 def report_missing_files(all_results, logger):
-    """Check which input files are missing from each approach's output."""
+    """Check which input files are missing from each approach's output.
+    
+    Uses PhiAnonymizer to map real filenames to anonymized names when
+    checking for output files, since the pipeline saves results under
+    anonymized names (e.g., patient_a_week1_report.json).
+    """
     input_files = get_input_files()
+    anonymizer = get_anonymizer_for_files(input_files)
+    
     logger.info(f"\n{'=' * 70}")
     logger.info("MISSING / FAILED FILES REPORT")
     logger.info(f"{'=' * 70}")
@@ -325,12 +348,19 @@ def report_missing_files(all_results, logger):
     ]
     for approach_id, approach_label in APPROACHES:
         results = all_results.get(approach_id, [])
-        processed = {r["file"] for r in results if r["status"] == "success"}
-        failed = {
-            r["file"]: r.get("error", "unknown")
-            for r in results
-            if r["status"] == "failed"
-        }
+        
+        # Check actual output files using anonymized names
+        processed = set()
+        failed = {}
+        for r in results:
+            original_name = r["file"]
+            anon_name = anonymizer.anonymize_filename(original_name)
+            anon_stem = Path(anon_name).stem
+            if r["status"] == "success" and is_file_processed_in_approach(approach_id, anon_stem):
+                processed.add(original_name)
+            elif r["status"] == "failed":
+                failed[original_name] = r.get("error", "unknown")
+        
         missing = [
             f.name for f in input_files
             if f.name not in processed and f.name not in failed
@@ -436,10 +466,10 @@ def print_summary(all_results, all_errors, total_start, logger):
 def main():
     # Setup logging first
     logger = setup_logging()
-    
+
     parser = argparse.ArgumentParser(description="Run all OCR approaches safely")
-    parser.add_argument("--resume", action="store_true", 
-                        help="Resume from last saved state (skip completed approaches)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from last saved state (skip already-processed files)")
     args = parser.parse_args()
 
     # Load or initialize state
@@ -455,11 +485,13 @@ def main():
         }
         # Clean output directory (but not the state file if it exists)
         clean_output_dir()
-    
+
     input_files = get_input_files()
     if not input_files:
         logger.error("No input files found!")
         return
+
+    anonymizer = get_anonymizer_for_files(input_files)
 
     logger.info(f"Found {len(input_files)} input file(s):")
     for f in input_files:
@@ -476,9 +508,22 @@ def main():
     all_done = True
 
     for approach_id, approach_label in APPROACHES:
-        if approach_id in completed:
-            logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
-            continue
+        # Check per-file completion when --resume is used
+        if args.resume:
+            files_needed = get_files_still_needed(approach_id, input_files, anonymizer)
+            if not files_needed:
+                logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
+                if approach_id not in completed:
+                    completed.add(approach_id)
+                continue
+            else:
+                logger.info(f"▶ {approach_label}: {len(files_needed)} file(s) still need processing "
+                           f"({len(input_files) - len(files_needed)} already done)")
+        else:
+            # Not resuming: only skip if already marked completed in state
+            if approach_id in completed:
+                logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
+                continue
 
         # Run this approach
         approach_start = time.time()
@@ -486,8 +531,12 @@ def main():
             results, errors = run_approach(approach_id, approach_label, input_files, logger)
             all_results[approach_id] = results
             all_errors[approach_id] = errors
-            completed.add(approach_id)
             
+            # Only mark as completed if ALL files have successful output
+            files_still_needed = get_files_still_needed(approach_id, input_files, anonymizer)
+            if not files_still_needed:
+                completed.add(approach_id)
+
             # Save state immediately after each approach
             state = {
                 "completed": list(completed),
@@ -496,10 +545,10 @@ def main():
                 "total_start": total_start
             }
             save_state(state)
-            
+
             approach_elapsed = time.time() - approach_start
             logger.info(f"✅ {approach_label} completed in {approach_elapsed:.1f}s")
-            
+
         except KeyboardInterrupt:
             logger.warning(f"\n⚠️  Interrupted during {approach_label}")
             logger.info("Progress has been saved. Run with --resume to continue.")
@@ -516,7 +565,6 @@ def main():
     # Only generate combined results if all approaches completed
     if all_done and len(completed) == len(APPROACHES):
         run_combined_comparison(logger)
-        run_consensus_comparison(logger)
         print_summary(all_results, all_errors, total_start, logger)
         report_missing_files(all_results, logger)
         logger.info("\n🎉 All approaches completed successfully!")
