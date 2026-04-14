@@ -256,7 +256,8 @@ class Pipeline:
         return result
 
     def process_directory(
-        self, input_dir: str | Path | None = None, generate_combined: bool = True
+        self, input_dir: str | Path | None = None, generate_combined: bool = True,
+        files_to_process: list[Path] | None = None,
     ) -> list[ExtractionResult]:
         """Process all supported files in a directory.
 
@@ -265,6 +266,8 @@ class Pipeline:
             generate_combined: If True, generate combined comparison results
                 after processing. Set to False when running as part of a
                 multi-approach benchmark (run_all_approaches_safe.py).
+            files_to_process: If provided, only process these specific Path objects
+                instead of scanning the entire input directory. Used for resume logic.
         """
         if input_dir is None:
             input_dir = self.config.input_path
@@ -275,43 +278,49 @@ class Pipeline:
             logger.error(f"Input directory not found: {input_dir}")
             return []
 
-        # Find all supported files
-        supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
-        files = sorted(
-            f
-            for f in input_dir.iterdir()
-            if f.suffix.lower() in supported and not f.name.startswith(".")
-        )
+        # Use provided file list or scan the input directory
+        if files_to_process is not None:
+            files = sorted(files_to_process)
+        else:
+            # Find all supported files
+            supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+            files = sorted(
+                f
+                for f in input_dir.iterdir()
+                if f.suffix.lower() in supported and not f.name.startswith(".")
+            )
 
         if not files:
             logger.warning(f"No supported files found in {input_dir}")
             return []
 
-        # Find already processed files in the merged Excel sheet to skip them
-        processed_files = set()
-        xlsx_path = self.config.output_path / "merged_results.xlsx"
-        if xlsx_path.exists():
-            try:
-                from openpyxl import load_workbook
+        # Find already processed files in the merged Excel sheet to skip them.
+        # Only used when files_to_process is NOT provided (i.e., full directory scan).
+        processed_files: set[str] = set()
+        if files_to_process is None:
+            xlsx_path = self.config.output_path / "merged_results.xlsx"
+            if xlsx_path.exists():
+                try:
+                    from openpyxl import load_workbook
 
-                wb = load_workbook(xlsx_path, read_only=True)
-                if self.config.export.excel_sheet_name in wb.sheetnames:
-                    ws = wb[self.config.export.excel_sheet_name]
-                else:
-                    ws = wb.active
+                    wb = load_workbook(xlsx_path, read_only=True)
+                    if self.config.export.excel_sheet_name in wb.sheetnames:
+                        ws = wb[self.config.export.excel_sheet_name]
+                    else:
+                        ws = wb.active
 
-                # Source File is column A (1-indexed)
-                for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
-                    if row[0]:
-                        processed_files.add(str(row[0]))
-                if processed_files:
-                    logger.info(
-                        f"Found {len(processed_files)} previously processed file(s) in Excel."
+                    # Source File is column A (1-indexed)
+                    for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
+                        if row[0]:
+                            processed_files.add(str(row[0]))
+                    if processed_files:
+                        logger.info(
+                            f"Found {len(processed_files)} previously processed file(s) in Excel."
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not read existing Excel to find processed files: {e}"
                     )
-            except Exception as e:
-                logger.warning(
-                    f"Could not read existing Excel to find processed files: {e}"
-                )
 
         logger.info(f"Found {len(files)} file(s) in input directory")
 
@@ -356,7 +365,7 @@ class Pipeline:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=1200,  # 10 min timeout per file
+                    timeout=2400,  # 20 min timeout per file
                 )
 
                 # Read result from temp JSON
@@ -380,7 +389,7 @@ class Pipeline:
                     logger.error(f"✗ {file_path.name}: {error_msg}")
 
             except subprocess.TimeoutExpired:
-                logger.error(f"✗ {file_path.name}: Timed out after 10 minutes")
+                logger.error(f"✗ {file_path.name}: Timed out after 20 minutes")
             except Exception as e:
                 logger.error(f"✗ {file_path.name}: {e}", exc_info=True)
 

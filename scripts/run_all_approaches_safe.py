@@ -171,8 +171,17 @@ def move_outputs_to_approach_dir(approach_id):
                 shutil.move(str(item), str(dest))
 
 
-def run_approach(approach_id, approach_label, input_files, logger):
-    """Run a single extraction approach on all input files."""
+def run_approach(approach_id, approach_label, input_files, logger, files_to_process=None):
+    """Run a single extraction approach on specified input files.
+
+    Args:
+        files_to_process: If provided, only process these files. If None, process all input_files.
+    """
+    files = files_to_process if files_to_process is not None else input_files
+    if not files:
+        logger.info("  No files to process, skipping.")
+        return [], []
+
     logger.info(f"\n{'=' * 70}")
     logger.info(f"APPROACH: {approach_label} ({approach_id})")
     logger.info(f"{'=' * 70}")
@@ -201,7 +210,9 @@ def run_approach(approach_id, approach_label, input_files, logger):
     # generate_combined=False: combined results generated once at the end
     file_start = time.time()
     try:
-        all_results = pipeline.process_directory(INPUT_DIR, generate_combined=False)
+        all_results = pipeline.process_directory(
+            INPUT_DIR, generate_combined=False, files_to_process=files
+        )
         elapsed = time.time() - file_start
 
         # Handle both dict (subprocess) and ExtractionResult (in-process) returns
@@ -508,9 +519,10 @@ def main():
     all_done = True
 
     for approach_id, approach_label in APPROACHES:
-        # Check per-file completion when --resume is used
+        # Determine which files need processing for this approach
+        files_needed = get_files_still_needed(approach_id, input_files, anonymizer)
+
         if args.resume:
-            files_needed = get_files_still_needed(approach_id, input_files, anonymizer)
             if not files_needed:
                 logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
                 if approach_id not in completed:
@@ -524,11 +536,16 @@ def main():
             if approach_id in completed:
                 logger.info(f"⏭  SKIPPING {approach_label} (already completed)")
                 continue
+            # When not resuming, process all files (ignore files_needed filter)
+            files_needed = None
 
-        # Run this approach
+        # Run this approach (only process files that still need it, or all if files_needed is None)
         approach_start = time.time()
         try:
-            results, errors = run_approach(approach_id, approach_label, input_files, logger)
+            results, errors = run_approach(
+                approach_id, approach_label, input_files, logger,
+                files_to_process=files_needed
+            )
             all_results[approach_id] = results
             all_errors[approach_id] = errors
             

@@ -1,4 +1,4 @@
-extraction_mode: band_crop_vlm_cloud
+extraction_mode: layout_guided_vlm_local
 paths:
   input_dir: input
   output_dir: output
