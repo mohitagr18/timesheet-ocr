@@ -365,7 +365,7 @@ class Pipeline:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=2400,  # 20 min timeout per file
+                    timeout=3600,  # 60 min timeout per file
                 )
 
                 # Read result from temp JSON
@@ -389,7 +389,7 @@ class Pipeline:
                     logger.error(f"✗ {file_path.name}: {error_msg}")
 
             except subprocess.TimeoutExpired:
-                logger.error(f"✗ {file_path.name}: Timed out after 20 minutes")
+                logger.error(f"✗ {file_path.name}: Timed out after 60 minutes")
             except Exception as e:
                 logger.error(f"✗ {file_path.name}: {e}", exc_info=True)
 

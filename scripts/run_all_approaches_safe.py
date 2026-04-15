@@ -152,23 +152,32 @@ def setup_approach_output(approach_id):
     return approach_dir
 
 
-def move_outputs_to_approach_dir(approach_id):
-    """Move generated output files from output/ root to output/{approach_id}/."""
+def cleanup_stray_outputs(approach_id):
+    """Move any stray output files from output/ root into the approach dir.
+
+    Since subprocesses now write directly to output/{approach_id}/, this should
+    rarely find anything. When it does, it NEVER overwrites existing files so
+    prior results from a partial/resumed run are always preserved.
+    """
     approach_dir = OUTPUT_DIR / approach_id
+    moved = 0
     for item in OUTPUT_DIR.iterdir():
         if item.name.startswith("."):
-            continue  # Skip hidden files
-        if item.is_file() or (item.is_dir() and item.name == "debug"):
+            continue  # Skip hidden files (.run_state.json etc.)
+        if item.name in (approach_id,) or item.is_dir():
+            continue  # Skip approach subdirs and other dirs
+        if item.is_file():
             dest = approach_dir / item.name
             if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-            if item.is_dir():
-                shutil.move(str(item), str(dest))
+                # File already saved from a previous run — keep it, discard the stray copy.
+                item.unlink()
             else:
                 shutil.move(str(item), str(dest))
+                moved += 1
+    if moved:
+        logging.getLogger(__name__).info(
+            f"  Picked up {moved} stray file(s) into {approach_id}/"
+        )
 
 
 def run_approach(approach_id, approach_label, input_files, logger, files_to_process=None):
@@ -193,14 +202,18 @@ def run_approach(approach_id, approach_label, input_files, logger, files_to_proc
     save_config(config)
     logger.info(f"Config updated: extraction_mode={approach_id}, visualize_ocr=false")
 
-    # Setup output directory
-    setup_approach_output(approach_id)
+    # Setup output directory for this approach
+    approach_dir = setup_approach_output(approach_id)
 
     # Import pipeline
     from src.config import load_config as load_app_config
     from src.pipeline import Pipeline
 
     app_config = load_app_config(str(CONFIG_PATH))
+    # *** Key fix: point output directly at the approach dir so each subprocess
+    # writes its files (report.json, benchmark.xlsx, etc.) straight there.
+    # This prevents the move-and-overwrite that was destroying results on resume.
+    app_config.paths.output_dir = str(approach_dir)
     pipeline = Pipeline(app_config)
 
     results = []
@@ -269,12 +282,10 @@ def run_approach(approach_id, approach_label, input_files, logger, files_to_proc
                 }
             )
 
-    # Move outputs to approach directory
-    move_outputs_to_approach_dir(approach_id)
-    logger.info(f"Outputs moved to {OUTPUT_DIR / approach_id}/")
+    # Pick up any stray files that landed in output/ root (should be rare now)
+    cleanup_stray_outputs(approach_id)
 
     # Verify files were saved
-    approach_dir = OUTPUT_DIR / approach_id
     saved_files = list(approach_dir.rglob("*"))
     logger.info(f"  Verified: {len(saved_files)} files/dirs in {approach_id}/")
 
