@@ -884,6 +884,7 @@ class Pipeline:
                         / f"band_crop_payload_page_{page_number}.jpg"
                     )
                     debug_path.parent.mkdir(parents=True, exist_ok=True)
+                    import cv2 as cv2  # noqa: PLC0415
                     cv2.imwrite(str(debug_path), payload_image)
 
         elif self.config.extraction_mode == "ocr_only":
