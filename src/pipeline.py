@@ -325,7 +325,12 @@ class Pipeline:
         logger.info(f"Found {len(files)} file(s) in input directory")
 
         # Create PHI anonymizer with all filenames for deterministic mapping
-        filenames = [f.name for f in files]
+        all_supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+        all_files = sorted(
+            f for f in input_dir.iterdir()
+            if f.suffix.lower() in all_supported and not f.name.startswith(".")
+        )
+        filenames = [f.name for f in all_files]
         anonymizer = PhiAnonymizer(filenames)
 
         # Persist name mappings to local SQLite DB

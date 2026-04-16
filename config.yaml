@@ -1,4 +1,4 @@
-extraction_mode: layout_guided_vlm_local
+extraction_mode: vlm_full_page
 paths:
   input_dir: input
   output_dir: output
