@@ -71,6 +71,8 @@ THIN_BORDER = Border(
 
 # ── Parsing helpers ──────────────────────────────────────────────────
 
+from src.parser import parse_date, parse_time, parse_hours
+
 def _parse_date(val):
     if val is None:
         return None
@@ -79,50 +81,23 @@ def _parse_date(val):
     val = str(val).strip()
     if not val:
         return None
-    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", val)
-    if m:
-        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if y < 100:
-            y += 2000
-        return f"{y:04d}-{mo:02d}-{d:02d}"
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", val)
-    if m:
+    import re
+    if re.match(r"\d{4}-\d{2}-\d{2}", val):
         return val
-    return val
-
+    d = parse_date(val)
+    return d.strftime("%Y-%m-%d") if d else val
 
 def _parse_float(val):
     if val is None:
         return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
-
+    return parse_hours(str(val))
 
 def _parse_time_min(val):
     if val is None:
         return None
-    val = str(val).strip()
-    if not val:
-        return None
-    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?", val)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-        ap = m.group(3)
-        if ap and ap.lower() == "pm" and h != 12:
-            h += 12
-        elif ap and ap.lower() == "am" and h == 12:
-            h = 0
-        if 0 <= h <= 23 and 0 <= mi <= 59:
-            return h * 60 + mi
-        return None
-    m = re.match(r"(\d{1,2})(\d{2})(?!\d)", val)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-        if 0 <= h <= 23 and 0 <= mi <= 59:
-            return h * 60 + mi
-        return None
+    t = parse_time(str(val))
+    if t is not None:
+        return t.hour * 60 + t.minute
     return None
 
 
@@ -203,7 +178,12 @@ def load_approach_data(approach_id):
                 ws = wb["Run Summary"]
                 for row in ws.iter_rows(values_only=True):
                     if row[0]:
-                        summary[str(row[0])] = row[1]
+                        key = str(row[0])
+                        val = row[1]
+                        if isinstance(val, (int, float)):
+                            summary[key] = summary.get(key, 0) + val
+                        else:
+                            summary[key] = val
             wb.close()
         except Exception:
             pass

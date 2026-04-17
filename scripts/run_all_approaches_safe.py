@@ -303,7 +303,7 @@ def run_combined_comparison(logger):
     logger.info(f"{'=' * 70}")
 
     result = subprocess.run(
-        ["python", "scripts/build_combined_report.py"],
+        [sys.executable, "scripts/build_combined_report.py"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
