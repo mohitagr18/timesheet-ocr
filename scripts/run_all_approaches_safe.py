@@ -40,7 +40,7 @@ APPROACHES = [
     ("ocr_only", "OCR Only (Baseline)"),
     ("ppocr_grid", "OCR + VLM Fallback"),  # SLOW: local Ollama per-field calls
     ("layout_guided_vlm_local", "Layout-Guided VLM (Local)"),  # SLOW: local Ollama
-    ("layout_guided_vlm_cloud", "Layout-Guided VLM (Cloud)"),
+    # ("layout_guided_vlm_cloud", "Layout-Guided VLM (Cloud)"), # Skipped temporarily
     ("vlm_full_page", "VLM Full Page"),
     ("band_crop_vlm_cloud", "Band-Crop VLM (Cloud)"),
 ]
