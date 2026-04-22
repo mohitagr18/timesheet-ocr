@@ -158,12 +158,13 @@ def _find_date_band(
             "  DATE fuzzy match: '%-40s' score=%.2f",
             best_box["text"], best_score,
         )
-        # Shift UP to capture the handwritten values above the label
+        # Expand instead of shift to capture the dates without exposing PHI
         box_h = best_box["y_max"] - best_box["y_min"]
-        shift_y = box_h * DATE_Y_SHIFT_MULTIPLIER
+        expand_up = box_h * 0.5    # slight expansion up for tall handwriting
+        expand_down = box_h * 0.5  # slight expansion down for low handwriting
         return {
-            "y_min": best_box["y_min"] + shift_y,
-            "y_max": best_box["y_max"] + shift_y,
+            "y_min": best_box["y_min"] - expand_up,
+            "y_max": best_box["y_max"] + expand_down,
             "matched_text": best_box["text"],
             "score": best_score,
             "coords_in": "roi_local",
@@ -269,23 +270,57 @@ class BandCropExtractor:
 
         Returns:
             (stitched_payload_image, is_signature_page)
-            - (None, True)  → no table detected (signature / summary page), skip
+            - (None, True)  → signature / summary page, skip
             - (stitched, False) → ready to send to Gemini
+
+        Privacy guarantee: only the top date-row band and bottom footer
+        band are ever extracted.  The middle of the page (where patient
+        names, clinical notes, and other PHI live) is never included,
+        regardless of whether table detection succeeds or fails.
         """
         padded = _add_padding(image, PAD)
         ph, pw = padded.shape[:2]
 
-        # Detect table bbox — used for X-clipping AND page classification.
-        # If no table is found, this page is not a grid page (signature,
-        # cover sheet, etc.) — skip it.  This replaces the full-page OCR
-        # box-count threshold used by other extraction modes.
+        # Detect table bbox — used for X-clipping optimisation.
         table_bbox = _detect_table_bbox(padded)
+
         if table_bbox is None:
-            logger.info(
-                "No table detected — treating page as non-grid "
-                "(signature / summary).",
+            # PP-DocLayoutV3 didn't find a table.  This could mean:
+            #   (a) It's a genuine signature/summary page → skip, OR
+            #   (b) The model just missed the grid → still extract bands.
+            #
+            # Distinguish via OCR box count (same heuristic other
+            # approaches use).  Run a quick OCR on the full padded image
+            # and check the number of detected text boxes.
+            sig_threshold = getattr(
+                self.config, "debug", None
             )
-            return None, True
+            sig_threshold = (
+                sig_threshold.signature_ocr_threshold
+                if sig_threshold is not None
+                else 100
+            )
+
+            ocr_boxes = _run_ocr(padded, "page-classify")
+            if len(ocr_boxes) < sig_threshold:
+                logger.info(
+                    "No table detected AND only %d OCR boxes (< %d) — "
+                    "treating as signature page.",
+                    len(ocr_boxes),
+                    sig_threshold,
+                )
+                return None, True
+
+            # Enough text on the page → it's a grid page whose table
+            # PP-DocLayoutV3 missed.  Use full padded-image width for
+            # X-clipping.  PHI safety is preserved because we still
+            # only slice the top (date) and bottom (footer) Y-bands.
+            logger.warning(
+                "No table bbox from DocLayoutV3 but %d OCR boxes — "
+                "proceeding with full-width band extraction.",
+                len(ocr_boxes),
+            )
+            table_bbox = (PAD, PAD, pw - PAD, ph - PAD)
 
         # OCR on date ROI for DATE row localisation
         date_roi_h = int(ph * DATE_ROI_FRAC)
