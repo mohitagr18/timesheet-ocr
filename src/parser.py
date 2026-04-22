@@ -166,6 +166,9 @@ def parse_hours(text: str) -> Optional[float]:
     - Decimal: "3.5", "7.25"
     - Fraction-like: "3 1/2" → 3.5
     - Integer: "8"
+    - With unit suffixes: "8hrs", "8hr", "12 hrs", "4 hours"
+    - Hours+minutes: "8hr 15min", "15h 30m", "8hr 05min"
+    - H:MM as hours:minutes: "8:15" → 8.25 (when used as total_hours)
     """
     text = text.strip()
 
@@ -197,6 +200,50 @@ def parse_hours(text: str) -> Optional[float]:
     match = re.match(r"(\d+)\s+3/4$", text)
     if match:
         return float(match.group(1)) + 0.75
+
+    # Try hours+minutes: "8hr 15min", "15h 30m", "8hr 05min", "6hr 55min"
+    match = re.match(
+        r"(\d+\.?\d*)\s*(?:hr|h)(?:s|R)?\.?\s+(\d+)\s*(?:min|m)(?:s|utes)?\.?$",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        h = float(match.group(1))
+        m = int(match.group(2))
+        return round(h + m / 60.0, 2)
+
+    # Try with unit suffix: "8hrs", "8hr", "12 hrs", "4 hours", "7hR"
+    match = re.match(
+        r"(\d+\.?\d*)\s*(?:hrs?|h0?urs?|hR)\.?$", text, re.IGNORECASE
+    )
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+
+    # Try "N HRS." with period
+    match = re.match(r"(\d+\.?\d*)\s*HRS?\.?$", text, re.IGNORECASE)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+
+    # Try H:MM as hours:minutes (e.g., "8:15" → 8.25)
+    match = re.match(r"(\d{1,2}):(\d{2})(?:\s*(?:min)?)?$", text)
+    if match:
+        h = int(match.group(1))
+        m = int(match.group(2))
+        if h <= 24 and m < 60:
+            return round(h + m / 60.0, 2)
+
+    # Try "Nh Mm" shorthand: "15h 30m"
+    match = re.match(r"(\d+)\s*h\s+(\d+)\s*m$", text, re.IGNORECASE)
+    if match:
+        h = int(match.group(1))
+        m = int(match.group(2))
+        return round(h + m / 60.0, 2)
 
     logger.warning(f"Could not parse hours: '{text}'")
     return None
