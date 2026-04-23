@@ -322,10 +322,15 @@ class BandCropExtractor:
             )
             table_bbox = (PAD, PAD, pw - PAD, ph - PAD)
 
-        # OCR on date ROI for DATE row localisation
+        # OCR on full image for physically accurate DATE row localisation
+        # (Running OCR on the cropped ROI distorted the aspect ratio and shifted bounding boxes)
         date_roi_h = int(ph * DATE_ROI_FRAC)
-        date_roi_crop = padded[0:date_roi_h, 0:pw].copy()
-        date_ocr = _run_ocr(date_roi_crop, "date-roi")
+        
+        if 'ocr_boxes' not in locals():
+            ocr_boxes = _run_ocr(padded, "full-page")
+            
+        # We only pass boxes that fall within the expected top ROI to _find_date_band
+        date_ocr = [box for box in ocr_boxes if box["y_min"] < date_roi_h]
 
         # Find DATE band coordinates
         date_band = _find_date_band(date_ocr, date_roi_h, ph)

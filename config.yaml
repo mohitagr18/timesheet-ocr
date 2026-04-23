@@ -1,4 +1,4 @@
-extraction_mode: layout_guided_vlm_cloud
+extraction_mode: ocr_only
 paths:
   input_dir: input
   output_dir: output
@@ -63,9 +63,13 @@ debug:
 cloud_vlm:
   provider: google
   api_key_env: GOOGLE_API_KEY
-  model: gemini-3-flash-preview
+  model: gemini-2.5-flash
+  vertexai: true
+  project: project-a44fece1-48df-4c9b-ac9
+  location: us-central1
   timeout_seconds: 30
   media_resolution: high
   image_quality: 92
   use_color_images: true
   inter_file_delay: 5
+  inter_page_delay: 4

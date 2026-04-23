@@ -176,6 +176,11 @@ class Pipeline:
             )
             records.append(record)
 
+            if extraction_mode in ("layout_guided_vlm_cloud", "band_crop_vlm_cloud") and page_idx < len(images) - 1:
+                page_delay = getattr(self.config.cloud_vlm, "inter_page_delay", 4)
+                logger.info(f"Rate limit prevention: waiting {page_delay}s before next page...")
+                time_module.sleep(page_delay)
+
         # 2.5 Aggregate Document-Level Metadata
         # (E.g. Page 1 has shifts/patient name, Page 2 has the employee signature)
         best_emp = (

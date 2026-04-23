@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import time
 import logging
 import os
 from pathlib import Path
@@ -74,8 +75,10 @@ class CloudVlmExtractor:
         try:
             from google import genai
 
+            is_vertex = getattr(self.config.cloud_vlm, "vertexai", False)
             api_key = os.environ.get(self.config.cloud_vlm.api_key_env, "")
-            if not api_key:
+            
+            if not is_vertex and not api_key:
                 logger.warning(
                     f"Cloud VLM API key not found in env var "
                     f"{self.config.cloud_vlm.api_key_env}. "
@@ -84,7 +87,15 @@ class CloudVlmExtractor:
                 self._available = False
                 return False
 
-            self._client = genai.Client(api_key=api_key)
+            if is_vertex:
+                self._client = genai.Client(
+                    vertexai=True,
+                    project=self.config.cloud_vlm.project,
+                    location=self.config.cloud_vlm.location,
+                )
+            else:
+                self._client = genai.Client(api_key=api_key)
+                
             self._available = True
             logger.info(
                 f"Google Gemini client initialized "
@@ -108,40 +119,49 @@ class CloudVlmExtractor:
         prompt = self._build_table_prompt()
         img_bytes = self._image_to_bytes(image)
 
-        try:
-            logger.info(
-                f"Sending table crop to Gemini ({self.config.cloud_vlm.model})..."
-            )
-            from google.genai import types
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    f"Sending table crop to Gemini ({self.config.cloud_vlm.model})... (Attempt {attempt+1}/{max_retries})"
+                )
+                from google.genai import types
 
-            image_part = types.Part.from_bytes(
-                data=img_bytes,
-                mime_type="image/jpeg",
-            )
+                image_part = types.Part.from_bytes(
+                    data=img_bytes,
+                    mime_type="image/jpeg",
+                )
 
-            # Set media resolution for better accuracy
-            resolution_str = getattr(self.config.cloud_vlm, "media_resolution", "high")
-            media_resolution = types.MediaResolution(
-                MEDIA_RESOLUTION_MAP.get(resolution_str, "MEDIA_RESOLUTION_HIGH")
-            )
+                # Set media resolution for better accuracy
+                resolution_str = getattr(self.config.cloud_vlm, "media_resolution", "high")
+                media_resolution = types.MediaResolution(
+                    MEDIA_RESOLUTION_MAP.get(resolution_str, "MEDIA_RESOLUTION_HIGH")
+                )
 
-            response = self._client.models.generate_content(
-                model=self.config.cloud_vlm.model,
-                contents=[prompt, image_part],
-                config={
-                    "temperature": 0.1,
-                    "response_mime_type": "application/json",
-                    "media_resolution": media_resolution,
-                },
-            )
+                response = self._client.models.generate_content(
+                    model=self.config.cloud_vlm.model,
+                    contents=[prompt, image_part],
+                    config={
+                        "temperature": 0.1,
+                        "response_mime_type": "application/json",
+                        "media_resolution": media_resolution,
+                    },
+                )
 
-            reply = response.text.strip()
-            logger.debug(f"Cloud VLM response: {reply[:300]}...")
-            return self._parse_response(reply)
+                reply = response.text.strip()
+                logger.debug(f"Cloud VLM response: {reply[:300]}...")
+                return self._parse_response(reply)
 
-        except Exception as e:
-            logger.error(f"Cloud VLM table crop extraction failed: {e}")
-            return {"shifts": []}
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg and attempt < max_retries - 1:
+                    logger.warning(f"Rate limit hit (429). Retrying in 60 seconds... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(60)
+                else:
+                    logger.error(f"Cloud VLM table crop extraction failed: {e}")
+                    return {"shifts": []}
+                    
+        return {"shifts": []}
 
 
     def _build_table_prompt(self) -> str:

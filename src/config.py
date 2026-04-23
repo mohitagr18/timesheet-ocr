@@ -80,6 +80,10 @@ class CloudVlmConfig(BaseModel):
     image_quality: int = 92  # JPEG quality (85-95 recommended)
     use_color_images: bool = True  # Send color images to VLM for better accuracy
     inter_file_delay: int = 5  # Seconds to wait between files (free-tier rate limit)
+    inter_page_delay: int = 4  # Seconds to wait between pages within a file
+    vertexai: bool = False
+    project: str | None = None
+    location: str | None = None
 
 
 class DebugConfig(BaseModel):
