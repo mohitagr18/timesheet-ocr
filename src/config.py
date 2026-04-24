@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -82,8 +82,8 @@ class CloudVlmConfig(BaseModel):
     inter_file_delay: int = 5  # Seconds to wait between files (free-tier rate limit)
     inter_page_delay: int = 4  # Seconds to wait between pages within a file
     vertexai: bool = False
-    project: str | None = None
-    location: str | None = None
+    project: Optional[str] = None
+    location: Optional[str] = None
 
 
 class DebugConfig(BaseModel):
@@ -92,6 +92,14 @@ class DebugConfig(BaseModel):
     anonymize_phi: bool = True
     signature_zone_fraction: float = 0.30
     signature_ocr_threshold: int = 100
+
+
+class BandCropConfig(BaseModel):
+    date_band_top_margin_frac: float = 0.02
+    date_band_bottom_margin_frac: float = 0.25
+    date_breathing_room: int = 50
+    date_retry_expansion_frac: float = 0.05
+    enable_date_retry: bool = True
 
 
 # ── Top-level config ────────────────────────────────────────────────
@@ -109,6 +117,7 @@ class AppConfig(BaseModel):
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    band_crop: BandCropConfig = Field(default_factory=BandCropConfig)
 
     # Resolved absolute paths (set during loading)
     project_root: Path = Field(default_factory=lambda: Path.cwd())
