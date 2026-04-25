@@ -380,13 +380,10 @@ class BandCropExtractor:
         table_bbox = _detect_table_bbox(padded)
 
         if table_bbox is None:
-            sig_threshold = getattr(
-                self.config, "debug", None
-            )
             sig_threshold = (
-                sig_threshold.signature_ocr_threshold
-                if sig_threshold is not None
-                else 100
+                getattr(self.config.band_crop, "signature_ocr_threshold", 30)
+                if hasattr(self.config, "band_crop")
+                else 30
             )
 
             ocr_boxes = _run_ocr(padded, "page-classify")
@@ -457,11 +454,10 @@ class BandCropExtractor:
         table_bbox = _detect_table_bbox(padded)
 
         if table_bbox is None:
-            sig_threshold = getattr(self.config, "debug", None)
             sig_threshold = (
-                sig_threshold.signature_ocr_threshold
-                if sig_threshold is not None
-                else 100
+                getattr(self.config.band_crop, "signature_ocr_threshold", 30)
+                if hasattr(self.config, "band_crop")
+                else 30
             )
 
             ocr_boxes = _run_ocr(padded, "page-classify")

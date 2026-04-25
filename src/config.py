@@ -101,6 +101,7 @@ class BandCropConfig(BaseModel):
     date_retry_expansion_frac: float = 0.05
     enable_date_retry: bool = True
     stitch_gap: int = 20
+    signature_ocr_threshold: int = 30
 
 
 # ── Top-level config ────────────────────────────────────────────────

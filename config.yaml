@@ -80,3 +80,4 @@ band_crop:
   date_retry_expansion_frac: 0.05
   enable_date_retry: true
   stitch_gap: 20
+  signature_ocr_threshold: 30

@@ -197,13 +197,18 @@ class Pipeline:
             else None
         )
 
-        for r in records:
-            if not r.employee_name and best_emp and best_emp.employee_name:
-                r.employee_name = best_emp.employee_name
-                r.employee_name_confidence = best_emp.employee_name_confidence
-            if not r.patient_name and best_pat and best_pat.patient_name:
-                r.patient_name = best_pat.patient_name
-                r.patient_name_confidence = best_pat.patient_name_confidence
+        unique_emp_names = {r.employee_name for r in records if r.employee_name}
+        unique_pat_names = {r.patient_name for r in records if r.patient_name}
+        if len(unique_emp_names) <= 1:
+            for r in records:
+                if not r.employee_name and best_emp and best_emp.employee_name:
+                    r.employee_name = best_emp.employee_name
+                    r.employee_name_confidence = best_emp.employee_name_confidence
+        if len(unique_pat_names) <= 1:
+            for r in records:
+                if not r.patient_name and best_pat and best_pat.patient_name:
+                    r.patient_name = best_pat.patient_name
+                    r.patient_name_confidence = best_pat.patient_name_confidence
 
         # Collect row-level benchmark metrics
         for record in records:
@@ -579,9 +584,9 @@ class Pipeline:
 
                 valid_row_idx = 0
                 shifts_data = vlm_results.get("shifts", [])
-                if len(shifts_data) > 12:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                        f"Page {page_number} VLM exceeded max rows limit ({len(shifts_data)} rows)! Discarding fake table."
                     )
                     shifts_data = []
 
@@ -735,9 +740,9 @@ class Pipeline:
 
                 valid_row_idx = 0
                 shifts_data = vlm_results.get("shifts", [])
-                if len(shifts_data) > 12:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                        f"Page {page_number} VLM exceeded max rows limit ({len(shifts_data)} rows)! Discarding fake table."
                     )
                     shifts_data = []
 
@@ -830,9 +835,9 @@ class Pipeline:
 
                 shifts_data = vlm_results.get("shifts", [])
 
-                if len(shifts_data) > 12:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} band_crop VLM hallucinated "
+                        f"Page {page_number} band_crop VLM exceeded max rows limit "
                         f"{len(shifts_data)} rows! Discarding."
                     )
                     shifts_data = []
