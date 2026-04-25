@@ -1,4 +1,4 @@
-extraction_mode: band_crop_vlm_cloud
+extraction_mode: layout_guided_vlm_cloud
 paths:
   input_dir: input
   output_dir: output
@@ -27,20 +27,20 @@ preprocessing:
 layout:
   transposed: true
   header_zone:
-  - 0.0
-  - 0.0
-  - 1.0
-  - 0.16
+    - 0.0
+    - 0.0
+    - 1.0
+    - 0.16
   table_zone:
-  - 0.24
-  - 0.16
-  - 1.0
-  - 0.98
+    - 0.24
+    - 0.16
+    - 1.0
+    - 0.98
   footer_zone:
-  - 0.0
-  - 0.98
-  - 1.0
-  - 1.0
+    - 0.0
+    - 0.98
+    - 1.0
+    - 1.0
 validation:
   max_shift_hours: 16
   hours_mismatch_tolerance: 0.25
@@ -50,7 +50,7 @@ validation:
   week_length: 7
 export:
   formats:
-  - xlsx
+    - xlsx
   excel_sheet_name: Timesheet Data
   include_review_json: true
   include_report_json: true

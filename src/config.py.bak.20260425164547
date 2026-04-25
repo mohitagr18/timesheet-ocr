@@ -74,7 +74,7 @@ class ExportConfig(BaseModel):
 class CloudVlmConfig(BaseModel):
     provider: str = "google"
     api_key_env: str = "GOOGLE_API_KEY"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3-flash-preview"
     timeout_seconds: int = 30
     media_resolution: str = "high"  # "low" | "medium" | "high" | "ultra_high"
     image_quality: int = 92  # JPEG quality (85-95 recommended)

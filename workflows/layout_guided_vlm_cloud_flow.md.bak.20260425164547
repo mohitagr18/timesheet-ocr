@@ -28,7 +28,7 @@ graph TD
     I --> J
     
     J --> K[Cloud VLM Returns JSON: shifts array]
-    K --> L{Hallucination Check > 50 rows?}
+    K --> L{Hallucination Check > 7 rows?}
     
     L -->|Yes| M[Discard, Return Empty]
     L -->|No| N[Parse Each Shift Row]
@@ -50,9 +50,9 @@ graph TD
 |--------|----------|
 | OCR role | Page classification only (grid vs signature) |
 | Layout detection | PP-DocLayoutV3 detects table zone |
-| VLM model | Cloud API (default: Google Gemini `gemini-2.5-flash`) |
+| VLM model | Cloud API (default: Google Gemini `gemini-3-flash-preview`) |
 | Input to VLM | Cropped table zone (with padding) |
-| Anti-hallucination | Discards results with > 50 rows |
+| Anti-hallucination | Discards results with > 7 rows |
 | Speed | Fast (cloud inference, no local model load) |
 | Accuracy | **Highest** — cloud models have superior handwriting recognition |
 | Best use | Maximum accuracy, API key available, no privacy constraints |
@@ -60,7 +60,7 @@ graph TD
 ## Configuration
 
 - **`cloud_vlm.provider`** — Cloud provider (default: `google`)
-- **`cloud_vlm.model`** — Cloud model name (default: `gemini-2.5-flash`)
+- **`cloud_vlm.model`** — Cloud model name (default: `gemini-3-flash-preview`)
 - **`cloud_vlm.api_key_env`** — Environment variable name for API key
 - **`cloud_vlm.timeout_seconds`** — Max wait time per API call
 - **`GOOGLE_API_KEY`** — Must be set in `.env` or environment

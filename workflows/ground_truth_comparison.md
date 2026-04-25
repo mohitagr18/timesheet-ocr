@@ -69,8 +69,7 @@ This generates `benchmark_*.xlsx` files for each approach in their respective ou
 
 After all 5 approaches complete, the runner automatically generates:
 
-- `output/combined/benchmark_combined.xlsx` — includes Approach Comparison, Human-Verified Results, and Time Comparison sheets
-- `output/combined/consensus.xlsx` — KPI dashboard with per-approach accuracy (Hours, Time-In, Time-Out) and "Best of 5" metrics
+- `output/combined/benchmark_combined.xlsx` — includes Approach Comparison, Human-Verified Results, and IEEE Paper Results sheets
 
 The ground truth comparison is integrated into step 3 — no separate script is needed. If ground truth is not filled, the comparison is skipped gracefully.
 
@@ -150,7 +149,5 @@ The `Human-Verified Results` sheet in `benchmark_combined.xlsx` contains three s
 |------|---------|
 | `ground_truth.xlsx` (project root) | Manual ground truth data (user-filled, git-ignored) |
 | `scripts/rebuild_combined_report.py` | Combined metrics + ground truth comparison (runs automatically) |
-| `scripts/create_consensus_results.py` | KPI dashboard + per-approach accuracy (runs automatically) |
 | `scripts/run_all_approaches_safe.py` | Batch runner that orchestrates everything |
-| `output/combined/benchmark_combined.xlsx` | Output with Human-Verified Results + Time Comparison sheets |
-| `output/combined/consensus.xlsx` | KPI dashboard with "Best of 5" accuracy |
+| `output/combined/benchmark_combined.xlsx` | Output with Approach Comparison + Human-Verified Results + IEEE Paper Results |

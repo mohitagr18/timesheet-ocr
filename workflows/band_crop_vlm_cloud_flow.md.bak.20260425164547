@@ -44,7 +44,7 @@ graph TD
     Q --> R[Send Stitched PHI-Safe Crop to Gemini]
     R --> S[Gemini Returns JSON: shifts array]
 
-    S --> T{Hallucination Check > 50 rows?}
+    S --> T{Hallucination Check > 7 rows?}
     T -->|Yes| U[Discard, Return Empty]
     T -->|No| V[Parse Each Shift Row]
 
@@ -69,10 +69,10 @@ graph TD
 | Signature detection | OCR box count threshold (default: 30 boxes) when PP-DocLayoutV3 finds no table |
 | Stitching | Configurable white gap (default: 20px) between date and footer bands |
 | Date retry | Optional expanded date band only for pages where initial extraction finds no dates |
-| VLM model | Cloud API (default: Google Gemini `gemini-2.5-flash`) |
+| VLM model | Cloud API (default: Google Gemini `gemini-3-flash-preview`) |
 | Input to VLM | Stitched image of DATE row band + footer band (~15% of full page) + configurable gap |
 | PHI exposure | **Zero clinical PHI** — only billing field headers transmitted |
-| Anti-hallucination | Discards results with > 50 rows |
+| Anti-hallucination | Discards results with > 7 rows |
 | Speed | Moderate to Fast (cloud inference, minimal preprocessing) |
 | Accuracy | High — focused bands provide clear context for Gemini |
 | Configurable | All band positions, thresholds, and gaps can be tuned via config |
@@ -126,7 +126,7 @@ When `enable_date_retry: true` (default):
 ### Cloud VLM Settings
 
 - **`cloud_vlm.provider`** — Cloud provider (default: `google`)
-- **`cloud_vlm.model`** — Cloud model name (default: `gemini-2.5-flash`)
+- **`cloud_vlm.model`** — Cloud model name (default: `gemini-3-flash-preview`)
 - **`cloud_vlm.api_key_env`** — Environment variable name for API key
 - **`cloud_vlm.timeout_seconds`** — Max wait time per API call
 - **`cloud_vlm.inter_file_delay`** — Seconds between files (rate limiting)
