@@ -215,6 +215,9 @@ output/
 # Session reports (auto-generated per run)
 reports/
 
+# Logs directory
+logs/
+
 # Ground truth (contains real names, PHI) — any extension, any directory
 ground_truth.*
 

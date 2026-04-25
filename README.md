@@ -77,28 +77,28 @@ Detailed Mermaid diagrams for each approach are in the [`workflows/`](workflows/
 
 ## 📊 Benchmark Results
 
-Results from processing **Sample Timesheets** (2 pages, 7 expected shifts):
+Results from processing **120 timesheet pages** with ground truth comparison:
 
 | Metric | OCR Only | OCR + VLM Fallback | VLM Full Page | Layout-Guided VLM (Local) | Layout-Guided VLM (Cloud) | Band-Crop VLM (Cloud) |
-|--------|----------|-------------------|---------------|--------------------------|--------------------------|----------------------|
-| **Processing Time (s)** | 100.24 | 195.11 | 1011 | 818.95 | 145.85 | 48.98 |
-| **Rows Extracted** | 16 | 24 | 19 | 20 | 18 | 18 |
-| **Accepted Rows** | 2 | 3 | 13 | 13 | **16** | 12 |
-| **Flagged Rows** | 14 | 21 | 6 | 7 | 2 | 6 |
-| **Mean Confidence** | 0.604 | 0.724 | **0.900** | **0.900** | **0.900** | **0.900** |
-| **VLM Fallbacks** | **0** | 0 | 0 | 0 | 0 | 0 |
-| **Hours Mismatch Rate** | **0.0%** | **0.0%** | 50.0% | 83.3% | **0.0%** | 33.3% |
-| **Field Missing Rate** | 66.7% | 72.7% | **0.0%** | **0.0%** | **0.0%** | 50.0% |
-| **Mean CER** | 0.899 | 0.899 | 0.615 | 0.615 | 0.594 | 0.594 |
+|--------|---------|-------------------|---------------|--------------------------|--------------------------|----------------------|
+| **Processing Time (s)** | 3588.37 | 6140.04 | 25339.01 | 24684.40 | 7340.12 | **4540.60** |
+| **Pages Processed** | 120 | 120 | 120 | 120 | 120 | 120 |
+| **Rows Extracted** | 278 | 346 | 222 | 240 | 235 | 225 |
+| **Accepted Rows** | 28 | 34 | 140 | 170 | 182 | **183** |
+| **Flagged Rows** | 250 | 312 | 82 | 70 | 53 | 42 |
+| **Hours Mismatch Rate** | 79.5% | 80.6% | 11.9% | 22.2% | 17.4% | **9.0%** |
+| **GT Hours Accuracy (±15min)** | 20.5% | 19.4% | 88.1% | 77.8% | 82.6% | **91.0%** |
+| **GT Time-In Accuracy (±30min)** | 26.1% | 21.5% | 77.6% | 69.1% | 82.6% | **89.9%** |
+| **GT Time-Out Accuracy (±30min)** | 34.1% | 30.1% | 79.1% | 77.8% | 80.4% | **87.6%** |
 
 ### Key Findings
 
-- **Layout-Guided VLM (Cloud)** achieves the best accuracy: 16 accepted, 0% hours mismatch, 0% field missing, lowest CER
-- **Band-Crop VLM (Cloud)** is the fastest approach (48.98s — 3× faster than layout-guided cloud), zero clinical PHI transmitted, ~15% of page pixels sent to Gemini
-- **OCR Only** extracts 16 rows but only accepts 2 — handwritten text requires VLM
-- **OCR + VLM Fallback** extracts the most rows (24) but only accepts 3 due to low OCR confidence
-- **VLM Full Page** and **Layout-Guided VLM (Local)** are slowest due to local model inference
-- **Band-Crop** trades precision for privacy: 33.3% hours mismatch vs 0% for layout-guided cloud, but sends 85% less data to Gemini
+- **Band-Crop VLM (Cloud)** achieves the best overall accuracy: 91.0% GT hours accuracy (±15min), lowest hours mismatch (9.0%), and highest accepted rows (183)
+- **Band-Crop VLM (Cloud)** is also the fastest cloud approach (4540.60s for 120 pages) — 1.6× faster than layout-guided cloud (7340.12s)
+- **Zero clinical PHI** transmitted — only billing fields (DATE row + footer) sent to Gemini
+- **Layout-Guided VLM (Cloud)** is second best: 82.6% hours accuracy, 17.4% mismatch
+- **VLM Full Page** has highest local accuracy (88.1% hours) but is slowest (25339s) due to full-page inference
+- **OCR Only** and **OCR+VLM Fallback** have poor accuracy (~20%) due to handwritten text recognition challenges
 
 ---
 
@@ -112,8 +112,7 @@ The pipeline includes a ground truth comparison workflow that evaluates extracti
    - Columns: `source_file`, `date`, `total_hours`, `time_in`, `time_out`, `employee_name`
 2. **Run all 6 approaches**: Use `scripts/run_all_approaches_safe.py` to generate benchmark data
 3. **Automatic**: Combined metrics and ground truth comparison are generated automatically after all approaches complete:
-   - `output/combined/benchmark_combined.xlsx` — approach comparison + Human-Verified Results + Time Comparison
-   - `output/combined/consensus.xlsx` — KPI dashboard + per-row best-approach detail
+   - `output/combined/benchmark_combined.xlsx` — approach comparison + Human-Verified Results + IEEE Paper Results
 
 ### Metrics Computed
 
@@ -195,11 +194,6 @@ uv run python scripts/run_all_approaches_safe.py
 
 # If interrupted, resume from last completed approach:
 uv run python scripts/run_all_approaches_safe.py --resume
-
-# Output: output/combined/benchmark_combined.xlsx + output/combined/consensus.xlsx
-
-# Optional: Fill in ground_truth.xlsx with expected values for accuracy evaluation, then re-run:
-# uv run python scripts/run_all_approaches_safe.py
 ```
 
 ---
@@ -226,7 +220,7 @@ ollama:
 
 cloud_vlm:
   provider: "google"
-  model: "gemini-3-flash-preview"
+  model: "gemini-2.5-flash"
 ```
 
 ---
@@ -245,8 +239,7 @@ output/
 ├── layout_guided_vlm_cloud/     # Approach 5 results
 ├── band_crop_vlm_cloud/         # Approach 6 results
 ├── combined/                    # Combined benchmark across all approaches
-│   ├── benchmark_combined.xlsx  # Summary + row-level + Human-Verified Results + Time Comparison
-│   ├── consensus.xlsx           # KPI dashboard + per-row best-approach detail
+│   ├── benchmark_combined.xlsx  # Summary + Approach Comparison + Human-Verified Results + IEEE Paper Results
 │   └── debug/                   # Debug images from all approaches
 └── debug/                       # Shared debug images
 
@@ -265,11 +258,7 @@ The `benchmark_combined.xlsx` file contains:
   - Extraction Coverage & Field-Level Accuracy (Date, Hours, Time In/Out rates, plus duplicate and hallucinated row counts)
   - Pipeline Validation Quality (precision, recall, false accept rate)
   - Per-Row Detailed Comparison (side-by-side values with ✓/✗ checkmarks)
-- **Time Comparison** — Three tables: Time-In comparison, Time-Out comparison, and Correctness Summary
-
-The `consensus.xlsx` file contains:
-- **KPI Dashboard** — Per-approach accuracy (Hours ±0.25h, Time-In ±30min, Time-Out ±30min) plus "Best of 6" accuracy and approach win counts
-- **Per-Row Detail** — For each ground truth row, which approach had the closest hours and all 6 approaches' values side-by-side
+- **IEEE Paper Results** — Formatted for academic paper: Performance Metrics + Accuracy Metrics tables
 
 ---
 

@@ -28,7 +28,7 @@ graph TD
     I --> J
     
     J --> K[VLM Returns JSON: shifts array]
-    K --> L{Hallucination Check > 7 rows?}
+    K --> L{Hallucination Check > 50 rows?}
     
     L -->|Yes| M[Discard, Return Empty]
     L -->|No| N[Parse Each Shift Row]
@@ -51,7 +51,7 @@ graph TD
 | Layout detection | PP-DocLayoutV3 detects table zone |
 | VLM model | Local via Ollama (e.g., `qwen2.5vl:7b`) |
 | Input to VLM | Cropped table zone (with padding) |
-| Anti-hallucination | Discards results with > 7 rows |
+| Anti-hallucination | Discards results with > 50 rows |
 | Speed | Moderate (layout detection + local VLM) |
 | Accuracy | High (VLM reads full table context) |
 | Best use | Privacy-first deployment, no cloud API needed |

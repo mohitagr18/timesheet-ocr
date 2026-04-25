@@ -16,80 +16,146 @@ graph TD
     B --> C[Run PP-DocLayoutV3 Table Detection]
     C --> D{Table Detected?}
 
-    D -->|No| E[Skip Page — Signature / Summary]
-    D -->|Yes| F[Run OCR on Top 25% ROI for DATE Label]
-    F --> G[Fuzzy Match DATE Keywords]
+    D -->|No| E[Run Full-Page OCR]
+    E --> F{OCR Boxes < threshold?}
 
-    G -->|Match Found| H[Shift Y Up to Capture Handwritten Dates]
-    G -->|No Match| I[Hardcoded Fallback Y Positions]
+    F -->|Yes| G[Skip — Signature/Summary Page]
+    F -->|No| H[Use Full Image Width for X-Clamp]
 
-    H --> J[Compute Footer Block Y from Image Bottom]
-    I --> J
+    D -->|Yes| H
 
-    J --> K[Slice Date Band from Original Image]
-    J --> L[Slice Footer Band from Original Image]
+    H --> I[Run Full-Page OCR for DATE Localization]
+    I --> J[Filter OCR Boxes: Keep Y < 25% ROI]
 
-    K --> M[Stitch Bands Vertically]
-    L --> M
+    J --> K[Fuzzy Match DATE Keywords]
 
-    M --> N[Send Stitched PHI-Safe Crop to Gemini]
-    N --> O[Gemini Returns JSON: shifts array]
+    K -->|Match Found| L[Expand Band: 1.5× Up, 2.0× Down]
+    K -->|No Match| M[Hardcoded Fallback Y: 0.5%–32%]
 
-    O --> P{Hallucination Check > 7 rows?}
-    P -->|Yes| Q[Discard, Return Empty]
-    P -->|No| R[Parse Each Shift Row]
+    L --> N[Compute Footer Block Y from Image Bottom]
+    M --> N
 
-    R --> S[Disambiguate Time In/Out]
-    S --> T[Create TimesheetRow Dictionary]
+    N --> O[Slice DATE Band from Original]
+    N --> P[Slice Footer Band from Original]
 
-    T --> U[Pass Row to Validation Sandbox]
-    U --> V[Export to Merged Excel File & Review Queue]
+    O --> Q[Stitch Bands with Configurable Gap]
+    P --> Q
 
-    style E fill:#fff8e1,stroke:#f9a825,color:#000
-    style Q fill:#ffebee,stroke:#c62828,color:#000
-    style N fill:#e8f5e9,stroke:#2e7d32,color:#000
+    Q --> R[Send Stitched PHI-Safe Crop to Gemini]
+    R --> S[Gemini Returns JSON: shifts array]
+
+    S --> T{Hallucination Check > 50 rows?}
+    T -->|Yes| U[Discard, Return Empty]
+    T -->|No| V[Parse Each Shift Row]
+
+    V --> W[Disambiguate Time In/Out]
+    W --> X[Create TimesheetRow Dictionary]
+
+    X --> Y[Pass Row to Validation Sandbox]
+    Y --> Z[Export to Merged Excel File & Review Queue]
+
+    style G fill:#fff8e1,stroke:#f9a825,color:#000
+    style U fill:#ffebee,stroke:#c62828,color:#000
+    style R fill:#e8f5e9,stroke:#2e7d32,color:#000
 ```
 
 ## Key Characteristics
 
 | Aspect | Behavior |
 |--------|----------|
-| OCR role | DATE row detection only (top 25% ROI) |
-| Layout detection | PP-DocLayoutV3 — table presence used as page classifier |
-| Band extraction | Fuzzy keyword match on DATE label → shift Y up; footer block from image bottom fractions |
-| VLM model | Cloud API (default: Google Gemini `gemini-3-flash-preview`) |
-| Input to VLM | Stitched image of DATE row band + footer band (~15% of full page) |
+| OCR role | Full-page OCR, then filter boxes by Y position (top 25% ROI) for DATE detection |
+| Layout detection | PP-DocLayoutV3 — table presence + OCR box count for page classification |
+| Band extraction | Fuzzy keyword match on DATE label → expand UP (1.5×) and DOWN (2.0×); footer block from bottom fractions |
+| Signature detection | OCR box count threshold (default: 30 boxes) when PP-DocLayoutV3 finds no table |
+| Stitching | Configurable white gap (default: 20px) between date and footer bands |
+| Date retry | Optional expanded date band only for pages where initial extraction finds no dates |
+| VLM model | Cloud API (default: Google Gemini `gemini-2.5-flash`) |
+| Input to VLM | Stitched image of DATE row band + footer band (~15% of full page) + configurable gap |
 | PHI exposure | **Zero clinical PHI** — only billing field headers transmitted |
-| Anti-hallucination | Discards results with > 7 rows |
-| Speed | Moderate (cloud inference, minimal preprocessing) |
+| Anti-hallucination | Discards results with > 50 rows |
+| Speed | Moderate to Fast (cloud inference, minimal preprocessing) |
 | Accuracy | High — focused bands provide clear context for Gemini |
-| Best use | Maximum accuracy + strongest PHI compliance, API key available |
+| Configurable | All band positions, thresholds, and gaps can be tuned via config |
 
 ## How Band Extraction Works
 
+### Page Classification
+
+1. Add white padding (50px) to avoid edge clipping
+2. Run PP-DocLayoutV3 to detect table/grid region
+3. **If table found**: Use table X-coordinates for horizontal clamping
+4. **If no table found**:
+   - Run full-page PaddleOCR
+   - If OCR box count < `signature_ocr_threshold` (default: 30) → treat as signature/summary page, skip
+   - Otherwise → use full image width for X-clamping and proceed with band extraction
+
 ### DATE Row Detection
 
-1. Run lightweight PaddleOCR on top 25% of padded image
-2. Fuzzy-match detected text against DATE keywords (e.g., `date (month/day/year)`, `month/day/year`)
-3. If match found (score ≥ 0.45): shift the band **UP** by 1.5× the label height to capture handwritten date values above the printed label
-4. If no match: fall back to hardcoded Y fractions (0.5% – 21% of padded height)
+1. Run OCR on the **full padded image** (not cropped ROI — avoids aspect-ratio distortion)
+2. Filter OCR boxes to only those in the top 25% of image height (`date_roi_frac = 0.25`)
+3. Fuzzy-match against DATE keywords (e.g., `date (month/day/year)`, `month/day/year`, `date`)
+4. **If match found** (score ≥ 0.45):
+   - Expand the band UP by 1.5× the matched label height
+   - Expand DOWN by 2.0× the matched label height
+   - This captures handwritten dates without exposing clinical PHI
+5. **If no match**: Use hardcoded Y fractions from config (`date_band_top_margin_frac: 0.02`, `date_band_bottom_margin_frac: 0.32`)
 
 ### Footer Block Detection
 
-1. Compute Y coordinates from image bottom: 2% margin from bottom, 12% height upward
-2. Both bands are horizontally clamped to the table bbox X coordinates detected by PP-DocLayoutV3
+1. Compute Y coordinates from image bottom using config:
+   - `footer_y1 = padded_h × (1.0 - footer_bottom_margin_frac)` where `footer_bottom_margin_frac = 0.02`
+   - `footer_y0 = padded_h × (1.0 - footer_bottom_margin_frac - footer_height_frac)` where `footer_height_frac = 0.12`
 
 ### Stitching
 
-1. Both bands are vertically concatenated with white padding to equalize widths
-2. Final stitched image is ~15% of a full table crop — dramatically reducing data sent to Gemini
+1. Apply breathing room (configurable, default: 50px) around each band
+2. Equalize widths by padding narrower band to match wider band
+3. Add configurable white gap between bands (default: 20px)
+4. Vertically concatenate with gap — final image ~15% of full page
+
+### Date Retry (Optional)
+
+When `enable_date_retry: true` (default):
+1. If initial band extraction produces empty/invalid results
+2. Expand the date band by `date_retry_expansion_frac` (default: 5%)
+3. Extract only the expanded date band (no footer)
+4. Retry VLM extraction with just dates
 
 ## Configuration
 
+### Cloud VLM Settings
+
 - **`cloud_vlm.provider`** — Cloud provider (default: `google`)
-- **`cloud_vlm.model`** — Cloud model name (default: `gemini-3-flash-preview`)
+- **`cloud_vlm.model`** — Cloud model name (default: `gemini-2.5-flash`)
 - **`cloud_vlm.api_key_env`** — Environment variable name for API key
 - **`cloud_vlm.timeout_seconds`** — Max wait time per API call
 - **`cloud_vlm.inter_file_delay`** — Seconds between files (rate limiting)
 - **`GOOGLE_API_KEY`** — Must be set in `.env` or environment
-- **Debug visualization** — Generates `band_crop_payload_page_{N}.jpg` in output/debug/
+
+### Band Crop Settings
+
+All these can be tuned in `config.yaml` under the `band_crop` section:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `date_band_top_margin_frac` | 0.02 | DATE band top Y fraction (fallback when fuzzy match fails) |
+| `date_band_bottom_margin_frac` | 0.32 | DATE band bottom Y fraction |
+| `date_breathing_room` | 50 | Extra pixels above/below DATE band |
+| `date_retry_expansion_frac` | 0.05 | Extra expansion % for date retry (5%) |
+| `enable_date_retry` | true | Enable retry with expanded date band |
+| `stitch_gap` | 20 | White pixels between stitched bands |
+| `signature_ocr_threshold` | 30 | OCR box count to distinguish signature from grid page |
+
+### Debug Visualization
+
+Generates `band_crop_payload_page_{N}.jpg` in `output/debug/` showing:
+- The stitched bands sent to Gemini
+- DATE band (top) + white gap + footer band (bottom)
+
+## PHI Compliance Notes
+
+This approach provides the **strongest PHI protection**:
+- Only the DATE row header band (top ~2-32% of table) is extracted
+- The footer TIME IN/TIME OUT/HOURS band (bottom ~12%) is extracted
+- **The entire middle section of the page — where patient names, clinical notes, and other PHI appear — is NEVER included in the payload**
+- Even if PP-DocLayoutV3 fails to detect the table, the X-clamping ensures only table-adjacent bands are extracted
