@@ -314,13 +314,15 @@ def disambiguate_times(
 
     Returns (time_in_parsed, time_out_parsed).
     """
+    logger.debug(f"disambiguate_times: in='{time_in_text}', out='{time_out_text}', hours='{total_hours_text}'")
+
     time_in_parsed = parse_time(time_in_text)
     time_out_parsed = parse_time(time_out_text)
 
     has_in_period = _has_period_marker(time_in_text)
     has_out_period = _has_period_marker(time_out_text)
 
-    if has_in_period or has_out_period:
+    if has_in_period and has_out_period:
         return time_in_parsed, time_out_parsed
 
     total_hours = parse_hours(total_hours_text)
@@ -357,7 +359,8 @@ def disambiguate_times(
                 best_in = candidate_in
                 best_out = candidate_out
             elif diff == best_diff and diff == 0:
-                if (in_p == "AM" and out_p == "PM") and (
+                # Tie-breaker: prefer PM over AM for both times
+                if out_p == "PM" and (
                     best_in != candidate_in or best_out != candidate_out
                 ):
                     best_in = candidate_in

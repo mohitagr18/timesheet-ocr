@@ -165,26 +165,35 @@ class CloudVlmExtractor:
 
 
     def _build_table_prompt(self) -> str:
-        """Build prompt optimized for cropped table images (no PHI context)."""
         return (
-            "This image shows a handwritten timesheet grid. "
-            "Extract all shift entries as a JSON array.\n\n"
-            "Each row has: Date, Time In, Time Out, Total Hours.\n"
-            "Return ONLY a JSON object with this exact structure:\n"
+            "This image shows TWO horizontal strips from a handwritten nursing timesheet, "
+            "stitched together vertically with a white gap between them:\n"
+            "  - TOP STRIP: the DATE row (Month/Day/Year) for 7 days (Wed through Tue)\n"
+            "  - BOTTOM STRIP: TIME IN, TIME OUT, and NUMBER OF HOURS rows for those same 7 days\n\n"
+            "The columns in both strips align — column 1 in the date strip is the same day "
+            "as column 1 in the time strip.\n\n"
+            "Extract one JSON object per day column that has a handwritten time entry. "
+            "Return ONLY this JSON structure:\n"
             "{\n"
             '  "shifts": [\n'
             '    {"date": "...", "time_in": "...", "time_out": "...", "total_hours": "..."}\n'
             "  ]\n"
             "}\n\n"
-            "If a field is missing or illegible, use an empty string.\n"
-            "CRITICAL: For dates, extract the numeric date written on the page "
-            "(e.g., '2/18/26', '02/18/2026', '1/4'). Do NOT return day-of-week names "
-            "like 'Wednesday' or 'Thursday'. Always return the numeric date.\n"
-            "CRITICAL: For times, strictly extract the exact text written on the page "
-            "(e.g., '8:00 AM', '4:30p', '10:30 PM'). Do NOT convert to 24-hour format.\n"
-            "CRITICAL: Only extract rows that contain visible, handwritten times. "
-            "If a row is blank, DO NOT include it.\n"
-            "Do not invent, guess, or sequentially generate dates or times."
+            "RULES:\n"
+            "1. DATE: Extract exactly what is written — short dates like '3/4/26' are common. "
+            "   A single digit before the slash is ONE digit, not two (e.g. '3/4/26' is March 4th, "
+            "   NOT March 14th). Never add digits that are not visibly written.\n"
+            "2. DATE: If a date cell is blank or contains only slashes (e.g. '/ /'), "
+            "   use an empty string for that date but still extract the time if present. "
+            "   Do not skip the column or shift alignment.\n"
+            "3. TIMES: Extract the exact text as written (e.g. '7am', '3pm', '11:00PM'). "
+            "   Do NOT convert to 24-hour format.\n"
+            "4. CORRECTIONS: If a cell has a crossed-out value and a replacement value, "
+            "   extract only the final uncrossed value. Ignore marginal initials or annotations.\n"
+            "5. BLANK COLUMNS: If a day has no time written, skip that day entirely — "
+            "   do not include it in the output.\n"
+            "6. Do not invent, guess, or sequentially fill in dates or times. "
+            "   Only extract what is visibly handwritten."
         )
 
     def _parse_response(self, reply: str) -> dict:
@@ -197,6 +206,8 @@ class CloudVlmExtractor:
             if not isinstance(shifts_data, list):
                 logger.warning("Cloud VLM shifts is not a JSON array")
                 return result
+
+            logger.info(f"Gemini returned {len(shifts_data)} shifts: {[(s.get('date',''), s.get('time_in','')) for s in shifts_data[:3]]}")
 
             for item in shifts_data:
                 if isinstance(item, dict):
