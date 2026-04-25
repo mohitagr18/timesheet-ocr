@@ -96,10 +96,11 @@ class DebugConfig(BaseModel):
 
 class BandCropConfig(BaseModel):
     date_band_top_margin_frac: float = 0.02
-    date_band_bottom_margin_frac: float = 0.25
+    date_band_bottom_margin_frac: float = 0.32
     date_breathing_room: int = 50
     date_retry_expansion_frac: float = 0.05
     enable_date_retry: bool = True
+    stitch_gap: int = 20
 
 
 # ── Top-level config ────────────────────────────────────────────────

@@ -33,6 +33,7 @@ DEFAULT_DATE_Y_END_FRAC = 0.210
 DEFAULT_DATE_ROI_FRAC = 0.25
 DEFAULT_FOOTER_BOTTOM_MARGIN_FRAC = 0.02
 DEFAULT_FOOTER_HEIGHT_FRAC = 0.12
+DEFAULT_STITCH_GAP = 20  # pixels of white space between date and footer crops
 
 MIN_OCR_SCORE = 0.20
 FUZZY_THRESHOLD = 0.45
@@ -62,6 +63,7 @@ def _get_config_values(config: "AppConfig | None") -> dict:
             "footer_height_frac": DEFAULT_FOOTER_HEIGHT_FRAC,
             "date_retry_expansion": bc.date_retry_expansion_frac,
             "enable_retry": bc.enable_date_retry,
+            "stitch_gap": bc.stitch_gap if hasattr(bc, "stitch_gap") else DEFAULT_STITCH_GAP,
         }
     return {
         "pad": DEFAULT_PAD,
@@ -73,6 +75,7 @@ def _get_config_values(config: "AppConfig | None") -> dict:
         "footer_height_frac": DEFAULT_FOOTER_HEIGHT_FRAC,
         "date_retry_expansion": 0.05,
         "enable_retry": True,
+        "stitch_gap": DEFAULT_STITCH_GAP,
     }
 
 
@@ -181,8 +184,8 @@ def _find_date_band(
             best_box["text"], best_score,
         )
         box_h = best_box["y_max"] - best_box["y_min"]
-        expand_up = box_h * 0.5
-        expand_down = box_h * 0.5
+        expand_up = box_h * 1.5
+        expand_down = box_h * 2.0
         return {
             "y_min": best_box["y_min"] - expand_up,
             "y_max": best_box["y_max"] + expand_down,
@@ -256,19 +259,32 @@ def _slice_bands(
     )
 
 
-def _stitch(bands: list[np.ndarray]) -> np.ndarray | None:
-    """Vertically concatenate bands, padding narrower bands to widest width."""
+def _stitch(bands: list[np.ndarray], gap_pixels: int = DEFAULT_STITCH_GAP) -> np.ndarray | None:
+    """Vertically concatenate bands with a white gap between them.
+
+    Args:
+        bands: List of image bands to concatenate
+        gap_pixels: Number of white pixels to add between bands (default 20)
+    """
     if not bands:
         return None
     w = max(b.shape[1] for b in bands)
+
+    # Create white gap band
+    gap = np.full((gap_pixels, w, 3), 255, dtype=np.uint8)
+
     out = []
-    for b in bands:
+    for i, b in enumerate(bands):
         if b.shape[1] < w:
             b = cv2.copyMakeBorder(
                 b, 0, 0, 0, w - b.shape[1],
                 cv2.BORDER_CONSTANT, value=(255, 255, 255),
             )
         out.append(b)
+        # Add gap between bands (but not after the last one)
+        if i < len(bands) - 1:
+            out.append(gap)
+
     return cv2.vconcat(out)
 
 
@@ -312,6 +328,9 @@ class BandCropExtractor:
 
     def _get_footer_height_frac(self) -> float:
         return self._cfg["footer_height_frac"]
+
+    def _get_stitch_gap(self) -> int:
+        return self._cfg.get("stitch_gap", DEFAULT_STITCH_GAP)
 
     def _get_date_coords_with_retry(self, padded_h: int, retry: bool = False) -> dict:
         """Get date band coordinates with optional retry expansion."""
@@ -416,7 +435,7 @@ class BandCropExtractor:
             logger.error("No bands extracted for this page.")
             return None, False
 
-        stitched = _stitch(bands)
+        stitched = _stitch(bands, gap_pixels=self._get_stitch_gap())
         if stitched is None or stitched.size == 0:
             logger.error("Stitched band payload is empty.")
             return None, False

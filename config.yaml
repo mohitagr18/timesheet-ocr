@@ -55,7 +55,7 @@ export:
   include_review_json: true
   include_report_json: true
 debug:
-  visualize_ocr: true
+  visualize_ocr: false
   output_dir: output/debug
   anonymize_phi: true
   signature_zone: 0.3
@@ -75,7 +75,8 @@ cloud_vlm:
   inter_page_delay: 4
 band_crop:
   date_band_top_margin_frac: 0.02
-  date_band_bottom_margin_frac: 0.25
+  date_band_bottom_margin_frac: 0.32
   date_breathing_room: 50
   date_retry_expansion_frac: 0.05
   enable_date_retry: true
+  stitch_gap: 20
