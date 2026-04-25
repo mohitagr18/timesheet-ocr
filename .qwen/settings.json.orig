@@ -1,7 +1,0 @@
-qwen{
-  "permissions": {
-    "allow": [
-      "Bash(python *)"
-    ]
-  }
-}
