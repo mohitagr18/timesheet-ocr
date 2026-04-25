@@ -35,6 +35,38 @@ GT_PATH = PROJECT_ROOT / "ground_truth.xlsx"
 COMBINED_PATH = COMBINED_DIR / "benchmark_combined.xlsx"
 BACKUP_PATH = COMBINED_DIR / "benchmark_combined_backup.xlsx"
 
+GT_SOURCE_MAP = {
+    "patient_a_week1": "N.Rivera-Timesheets-021826-022426.pdf",
+    "patient_b_week2": "N.Rivera-Timesheets-030426-031026.pdf",
+    "patient_c_week3": "L.Moran-Timesheet-122425-123025.pdf",
+    "patient_d_week4": "S.Hanton Timesheet - 012826-020326.pdf",
+    "patient_e_week5": "J.Jackson-Timesheets-121025-121625.pdf",
+    "patient_f_week6": "J.Jackson-Timesheets-121725-122325.pdf",
+    "patient_g_week7": "S.Bussa-Timesheet-020426-021026.pdf",
+    "patient_h_week8": "S.Bussa-Timesheet-021126-021726.pdf",
+    "patient_i_week9": "L.Moran-Timesheet-122425-123025.pdf",
+    "patient_j_week10": "R.Elliott-Timesheets-112625-120225.pdf",
+    "patient_k_week11": "N.Rivera-Timesheets-021826-022426.pdf",
+    "patient_l_week12": "N.Rivera-Timesheets-030426-031026.pdf",
+    "patient_m_week13": "L.Moran-Timesheet-123125-010626.pdf",
+    "patient_n_week14": "P.Derricott-Timesheet-010726-011326.pdf",
+    "patient_o_week15": "P.Derricott-Timesheet-011426-012026.pdf",
+    "patient_p_week16": "H.Leal-123125-010626.pdf",
+    "patient_q_week17": "R.Elliott Timesheets 111925-112525.pdf",
+    "patient_r_week18": "R.Elliott-Timesheets-112625-120225.pdf",
+    "patient_s_week19": "R.Elliott-Timesheets-120325-120925.pdf",
+    "patient_t_week20": "R.Elliott-Timesheets-120325-120925.pdf",
+    "patient_u_week21": "R.Elliott-Timesheets-122425-123025.pdf",
+    "patient_v_week22": "S.Bussa-Timesheet-020426-021026.pdf",
+    "patient_w_week23": "S.Bussa-Timesheet-020426-021026.pdf",
+    "patient_x_week24": "S.Bussa-Timesheet-021126-021726.pdf",
+    "patient_y_week25": "S.Bussa-Timesheet-021826-022426.pdf",
+    "patient_z_week26": "P.Derricott Timesheet - 012826-020326",
+    "patient_[_week27": "S.Hanton Timesheet - 012826-020326.pdf",
+    "patient_]_week29": "S.Pegram-Timesheetes-011426-012026.pdf",
+    "patient_^_week30": "S.Pegram-Timesheetes-012826-020326.pdf",
+}
+
 APPROACHES = [
     ("ocr_only", "OCR Only", "E8E8E8"),
     ("ppocr_grid", "OCR+VLM", "E2EFDA"),
@@ -71,7 +103,63 @@ THIN_BORDER = Border(
 
 # ── Parsing helpers ──────────────────────────────────────────────────
 
-def _parse_date(val):
+from src.parser import parse_date, parse_time, parse_hours, extract_week_dates
+
+_DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _build_day_name_map(source_file: str) -> dict[str, str]:
+    """Build {day_name: YYYY-MM-DD} lookup from an anonymized source filename.
+
+    Uses GT_SOURCE_MAP to recover the original filename with date range,
+    then generates the week's dates and maps each day name to its date.
+    """
+    original = None
+    for anon_key, gt_source in GT_SOURCE_MAP.items():
+        if anon_key in source_file:
+            original = gt_source
+            break
+    if not original:
+        return {}
+    dates = extract_week_dates(original, week_start_day=2, week_length=7)
+    if not dates:
+        return {}
+    return {_DAY_NAMES[d.weekday()]: d.strftime("%Y-%m-%d") for d in dates}
+
+
+def _resolve_day_name(val: str, day_map: dict[str, str]) -> str | None:
+    """Try to resolve a day-name date to YYYY-MM-DD.
+
+    Handles:
+      - Pure day name: "Wednesday" → lookup in day_map
+      - Day name + embedded date: "Saturday 12-26-25" → parse the embedded date
+      - "Sunday 1/4/26" → parse embedded date
+    Returns resolved YYYY-MM-DD string, or None if not resolvable.
+    """
+    val_stripped = val.strip()
+    if not val_stripped:
+        return None
+
+    first_word = val_stripped.split()[0].lower().rstrip(",")
+    is_day_name = first_word in _DAY_NAMES
+
+    if not is_day_name:
+        return None
+
+    # Check for embedded date after the day name (e.g. "Saturday 12-26-25")
+    date_match = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})", val_stripped)
+    if date_match:
+        embedded = date_match.group(0)
+        d = parse_date(embedded)
+        if d:
+            return d.strftime("%Y-%m-%d")
+
+    # Pure day name — use the day_map
+    resolved = day_map.get(first_word)
+    return resolved
+
+
+def _parse_date(val, day_map=None):
     if val is None:
         return None
     if hasattr(val, "strftime"):
@@ -79,50 +167,30 @@ def _parse_date(val):
     val = str(val).strip()
     if not val:
         return None
-    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", val)
-    if m:
-        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if y < 100:
-            y += 2000
-        return f"{y:04d}-{mo:02d}-{d:02d}"
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", val)
-    if m:
+    import re
+    if re.match(r"\d{4}-\d{2}-\d{2}", val):
         return val
+    d = parse_date(val)
+    if d:
+        return d.strftime("%Y-%m-%d")
+    # Fallback: try day-name resolution
+    if day_map:
+        resolved = _resolve_day_name(val, day_map)
+        if resolved:
+            return resolved
     return val
-
 
 def _parse_float(val):
     if val is None:
         return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
-
+    return parse_hours(str(val))
 
 def _parse_time_min(val):
     if val is None:
         return None
-    val = str(val).strip()
-    if not val:
-        return None
-    m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?", val)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-        ap = m.group(3)
-        if ap and ap.lower() == "pm" and h != 12:
-            h += 12
-        elif ap and ap.lower() == "am" and h == 12:
-            h = 0
-        if 0 <= h <= 23 and 0 <= mi <= 59:
-            return h * 60 + mi
-        return None
-    m = re.match(r"(\d{1,2})(\d{2})(?!\d)", val)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-        if 0 <= h <= 23 and 0 <= mi <= 59:
-            return h * 60 + mi
-        return None
+    t = parse_time(str(val))
+    if t is not None:
+        return t.hour * 60 + t.minute
     return None
 
 
@@ -203,7 +271,12 @@ def load_approach_data(approach_id):
                 ws = wb["Run Summary"]
                 for row in ws.iter_rows(values_only=True):
                     if row[0]:
-                        summary[str(row[0])] = row[1]
+                        key = str(row[0])
+                        val = row[1]
+                        if isinstance(val, (int, float)):
+                            summary[key] = summary.get(key, 0) + val
+                        else:
+                            summary[key] = val
             wb.close()
         except Exception:
             pass
@@ -211,6 +284,8 @@ def load_approach_data(approach_id):
     wb = openpyxl.load_workbook(merged_path, read_only=True, data_only=True)
     ws = wb.active
     header = None
+    # Pre-build day-name maps for each source file (used for day-name → date resolution)
+    _day_maps: dict[str, dict[str, str]] = {}
     for r in ws.iter_rows(values_only=True):
         if header is None:
             header = [str(c).strip() if c else "" for c in r]
@@ -218,9 +293,12 @@ def load_approach_data(approach_id):
         if not any(r):
             continue
         rec = dict(zip(header, r))
-        rec["_date"] = _parse_date(rec.get("Date"))
+        source = str(rec.get("Source File", ""))
+        if source not in _day_maps:
+            _day_maps[source] = _build_day_name_map(source)
+        rec["_date"] = _parse_date(rec.get("Date"), day_map=_day_maps.get(source))
         rec["_status"] = str(rec.get("Status", "")).strip().lower()
-        rec["_source"] = str(rec.get("Source File", ""))
+        rec["_source"] = source
         rec["_time_in"] = rec.get("Time In", "")
         rec["_time_out"] = rec.get("Time Out", "")
         rec["_hours"] = rec.get("Total Hours")
@@ -242,30 +320,75 @@ def load_approach_data(approach_id):
     return rows, summary
 
 
+def _reverse_source_map(source):
+    """Map anonymized source back to original GT source filename."""
+    for anon_key, gt_source in GT_SOURCE_MAP.items():
+        if anon_key in source:
+            return gt_source
+    return source
+
+
+def _detect_header_row(header, first_row):
+    """Detect if first_row is a header or data. Returns (header, first_data_row_offset)."""
+    import re
+    date_patterns = [
+        r"\d{4}-\d{2}-\d{2}",  # 2026-02-18
+        r"\d{1,2}/\d{1,2}/\d{2,4}",  # 02/18/2026
+        r"\d{1,2}-\d{1,2}-\d{2,4}",  # 02-18-2026
+    ]
+
+    is_header = False
+    for h, f in zip(header, first_row):
+        h_str = str(h).strip().lower()
+        f_str = str(f)
+        if h_str in ("date", "source", "source_file", "hours", "total_hours", "time_in", "time_out"):
+            if f_str and not any(re.match(p, f_str) for p in date_patterns):
+                if h_str in ("date",) and re.match(r"\d", f_str):
+                    continue
+                if h_str in ("hours", "total_hours") and re.match(r"^\d+\.?\d*$", f_str):
+                    continue
+                is_header = True
+                break
+
+    if is_header:
+        return header, 1
+    return first_row, 0
+
+
 def load_ground_truth():
     if not GT_PATH.exists():
         return []
     try:
         wb = openpyxl.load_workbook(GT_PATH, read_only=True, data_only=True)
         ws = wb.active
-        header = None
+        raw_rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+
+        if len(raw_rows) < 2:
+            return []
+
+        first_row = raw_rows[0]
+        header, data_offset = _detect_header_row(
+            ["col0", "col1", "col2", "col3", "col4", "col5"],
+            first_row
+        )
+
+        header = ["col0", "col1", "col2", "col3", "col4", "col5"]
+
         rows = []
-        for r in ws.iter_rows(values_only=True):
-            if header is None:
-                header = [str(c).strip() if c else "" for c in r]
-                continue
+        for r in raw_rows[data_offset:]:
             if not any(r):
                 continue
             rec = dict(zip(header, r))
-            rec["_date"] = _parse_date(rec.get("date"))
-            rec["_time_in_min"] = _parse_time_min(rec.get("time_in"))
-            rec["_time_out_min"] = _parse_time_min(rec.get("time_out"))
-            gt_h = _parse_float(rec.get("total_hours"))
+            rec["_date"] = _parse_date(rec.get("col1", rec.get("Date")))
+            rec["_time_in_min"] = _parse_time_min(rec.get("col3", rec.get("time_in")))
+            rec["_time_out_min"] = _parse_time_min(rec.get("col4", rec.get("time_out")))
+            gt_h = _parse_float(rec.get("col2", rec.get("total_hours", rec.get("col2"))))
             if gt_h is None:
                 gt_h = _compute_hours(rec["_time_in_min"], rec["_time_out_min"])
             rec["_hours"] = gt_h
+            rec["_source"] = str(rec.get("col0", rec.get("source_file", "")))
             rows.append(rec)
-        wb.close()
         return rows
     except Exception as e:
         print(f"  WARNING: Failed to load ground truth: {e}")
@@ -292,14 +415,19 @@ def compute_gt_metrics(rows, gt):
 
     gt_by_key = {}
     for g in gt:
-        source = str(g.get("source_file", ""))
-        key = (source, g["_date"])
-        gt_by_key[key] = g
+        source = _reverse_source_map(str(g.get("_source", "")))
+        date_val = g["_date"]
+        if date_val:
+            key = (source, date_val)
+            gt_by_key[key] = g
 
     approach_by_key = {}
     for ar in rows:
-        key = (ar["_source"], ar["_date"])
-        approach_by_key.setdefault(key, []).append(ar)
+        source = _reverse_source_map(str(ar.get("_source", "")))
+        date_val = ar["_date"]
+        if date_val:
+            key = (source, date_val)
+            approach_by_key.setdefault(key, []).append(ar)
 
     matched_list = []
     duplicates = []
@@ -326,9 +454,9 @@ def compute_gt_metrics(rows, gt):
             ah = _parse_float(ar["_hours"])
             ati = _parse_time_min(ar["_time_in"])
             ato = _parse_time_min(ar["_time_out"])
-            gh = _parse_float(gt_rec.get("total_hours"))
-            gti = _parse_time_min(gt_rec.get("time_in"))
-            gto = _parse_time_min(gt_rec.get("time_out"))
+            gh = gt_rec["_hours"]
+            gti = gt_rec["_time_in_min"]
+            gto = gt_rec["_time_out_min"]
             hd = abs(ah - gh) if (ah is not None and gh is not None) else 999
             tid = abs(ati - gti) if (ati is not None and gti is not None) else 9999
             tod = abs(ato - gto) if (ato is not None and gto is not None) else 9999
@@ -343,9 +471,9 @@ def compute_gt_metrics(rows, gt):
         bh = _parse_float(best["_hours"])
         bti = _parse_time_min(best["_time_in"])
         bto = _parse_time_min(best["_time_out"])
-        gh = _parse_float(gt_rec.get("total_hours"))
-        gti = _parse_time_min(gt_rec.get("time_in"))
-        gto = _parse_time_min(gt_rec.get("time_out"))
+        gh = gt_rec["_hours"]
+        gti = gt_rec["_time_in_min"]
+        gto = gt_rec["_time_out_min"]
 
         ho = bh is not None and gh is not None and abs(bh - gh) <= HOURS_TOL
         tino = bti is not None and gti is not None and abs(bti - gti) <= TIME_TOL
@@ -363,6 +491,8 @@ def compute_gt_metrics(rows, gt):
         matched_list.append({**best, "_fully_correct": ho and tino and too,
                              "_partially_correct": sum([ho, tino, too]) > 0,
                              "_not_extracted": False,
+                             "_source": _reverse_source_map(best.get("_source", "")),
+                             "_gt_date": gt_rec["_date"],
                              "_hours_ok": ho, "_time_in_ok": tino, "_time_out_ok": too})
 
         if best.get("_status") == "accepted" and not (ho and tino and too):
@@ -554,21 +684,22 @@ def _write_human_verified(ws, all_data, gt):
 
     for source in sorted(gt_by_source.keys()):
         for gt_row in gt_by_source[source]:
-            gt_date = gt_row["_date"] or str(gt_row.get("date", ""))
+            gt_date = gt_row["_date"]
             gt_hours = gt_row["_hours"]
             ws.cell(row=row, column=1, value=_anon_source(source)).border = THIN_BORDER
             ws.cell(row=row, column=2, value=gt_date).border = THIN_BORDER
-            ws.cell(row=row, column=3, value=str(gt_row.get("time_in", "") or "")).border = THIN_BORDER
-            ws.cell(row=row, column=4, value=str(gt_row.get("time_out", "") or "")).border = THIN_BORDER
+            ti_min = gt_row.get("_time_in_min")
+            to_min = gt_row.get("_time_out_min")
+            ws.cell(row=row, column=3, value=f"{ti_min//60}:{ti_min%60:02d}" if ti_min is not None else "").border = THIN_BORDER
+            ws.cell(row=row, column=4, value=f"{to_min//60}:{to_min%60:02d}" if to_min is not None else "").border = THIN_BORDER
             ws.cell(row=row, column=5, value=gt_hours).border = THIN_BORDER
 
             col = 6
             for aid, dd in all_data.items():
                 fill_color = FILLS.get(aid, None)
-                gt_key = (source, gt_row["_date"])
                 matched = None
                 for m in dd["gt"]["matched_list"]:
-                    if m.get("_source") == source and _parse_date(m.get("Date")) == gt_row["_date"]:
+                    if m.get("_gt_date") == gt_row["_date"]:
                         matched = m
                         break
 

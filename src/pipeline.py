@@ -176,6 +176,11 @@ class Pipeline:
             )
             records.append(record)
 
+            if extraction_mode in ("layout_guided_vlm_cloud", "band_crop_vlm_cloud") and page_idx < len(images) - 1:
+                page_delay = getattr(self.config.cloud_vlm, "inter_page_delay", 4)
+                logger.info(f"Rate limit prevention: waiting {page_delay}s before next page...")
+                time_module.sleep(page_delay)
+
         # 2.5 Aggregate Document-Level Metadata
         # (E.g. Page 1 has shifts/patient name, Page 2 has the employee signature)
         best_emp = (
@@ -192,13 +197,18 @@ class Pipeline:
             else None
         )
 
-        for r in records:
-            if not r.employee_name and best_emp and best_emp.employee_name:
-                r.employee_name = best_emp.employee_name
-                r.employee_name_confidence = best_emp.employee_name_confidence
-            if not r.patient_name and best_pat and best_pat.patient_name:
-                r.patient_name = best_pat.patient_name
-                r.patient_name_confidence = best_pat.patient_name_confidence
+        unique_emp_names = {r.employee_name for r in records if r.employee_name}
+        unique_pat_names = {r.patient_name for r in records if r.patient_name}
+        if len(unique_emp_names) <= 1:
+            for r in records:
+                if not r.employee_name and best_emp and best_emp.employee_name:
+                    r.employee_name = best_emp.employee_name
+                    r.employee_name_confidence = best_emp.employee_name_confidence
+        if len(unique_pat_names) <= 1:
+            for r in records:
+                if not r.patient_name and best_pat and best_pat.patient_name:
+                    r.patient_name = best_pat.patient_name
+                    r.patient_name_confidence = best_pat.patient_name_confidence
 
         # Collect row-level benchmark metrics
         for record in records:
@@ -256,7 +266,8 @@ class Pipeline:
         return result
 
     def process_directory(
-        self, input_dir: str | Path | None = None, generate_combined: bool = True
+        self, input_dir: str | Path | None = None, generate_combined: bool = True,
+        files_to_process: list[Path] | None = None,
     ) -> list[ExtractionResult]:
         """Process all supported files in a directory.
 
@@ -265,6 +276,8 @@ class Pipeline:
             generate_combined: If True, generate combined comparison results
                 after processing. Set to False when running as part of a
                 multi-approach benchmark (run_all_approaches_safe.py).
+            files_to_process: If provided, only process these specific Path objects
+                instead of scanning the entire input directory. Used for resume logic.
         """
         if input_dir is None:
             input_dir = self.config.input_path
@@ -275,48 +288,59 @@ class Pipeline:
             logger.error(f"Input directory not found: {input_dir}")
             return []
 
-        # Find all supported files
-        supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
-        files = sorted(
-            f
-            for f in input_dir.iterdir()
-            if f.suffix.lower() in supported and not f.name.startswith(".")
-        )
+        # Use provided file list or scan the input directory
+        if files_to_process is not None:
+            files = sorted(files_to_process)
+        else:
+            # Find all supported files
+            supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+            files = sorted(
+                f
+                for f in input_dir.iterdir()
+                if f.suffix.lower() in supported and not f.name.startswith(".")
+            )
 
         if not files:
             logger.warning(f"No supported files found in {input_dir}")
             return []
 
-        # Find already processed files in the merged Excel sheet to skip them
-        processed_files = set()
-        xlsx_path = self.config.output_path / "merged_results.xlsx"
-        if xlsx_path.exists():
-            try:
-                from openpyxl import load_workbook
+        # Find already processed files in the merged Excel sheet to skip them.
+        # Only used when files_to_process is NOT provided (i.e., full directory scan).
+        processed_files: set[str] = set()
+        if files_to_process is None:
+            xlsx_path = self.config.output_path / "merged_results.xlsx"
+            if xlsx_path.exists():
+                try:
+                    from openpyxl import load_workbook
 
-                wb = load_workbook(xlsx_path, read_only=True)
-                if self.config.export.excel_sheet_name in wb.sheetnames:
-                    ws = wb[self.config.export.excel_sheet_name]
-                else:
-                    ws = wb.active
+                    wb = load_workbook(xlsx_path, read_only=True)
+                    if self.config.export.excel_sheet_name in wb.sheetnames:
+                        ws = wb[self.config.export.excel_sheet_name]
+                    else:
+                        ws = wb.active
 
-                # Source File is column A (1-indexed)
-                for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
-                    if row[0]:
-                        processed_files.add(str(row[0]))
-                if processed_files:
-                    logger.info(
-                        f"Found {len(processed_files)} previously processed file(s) in Excel."
+                    # Source File is column A (1-indexed)
+                    for row in ws.iter_rows(min_row=2, max_col=1, values_only=True):
+                        if row[0]:
+                            processed_files.add(str(row[0]))
+                    if processed_files:
+                        logger.info(
+                            f"Found {len(processed_files)} previously processed file(s) in Excel."
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not read existing Excel to find processed files: {e}"
                     )
-            except Exception as e:
-                logger.warning(
-                    f"Could not read existing Excel to find processed files: {e}"
-                )
 
         logger.info(f"Found {len(files)} file(s) in input directory")
 
         # Create PHI anonymizer with all filenames for deterministic mapping
-        filenames = [f.name for f in files]
+        all_supported = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp"}
+        all_files = sorted(
+            f for f in input_dir.iterdir()
+            if f.suffix.lower() in all_supported and not f.name.startswith(".")
+        )
+        filenames = [f.name for f in all_files]
         anonymizer = PhiAnonymizer(filenames)
 
         # Persist name mappings to local SQLite DB
@@ -356,7 +380,7 @@ class Pipeline:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=1200,  # 10 min timeout per file
+                    timeout=3600,  # 60 min timeout per file
                 )
 
                 # Read result from temp JSON
@@ -380,7 +404,7 @@ class Pipeline:
                     logger.error(f"✗ {file_path.name}: {error_msg}")
 
             except subprocess.TimeoutExpired:
-                logger.error(f"✗ {file_path.name}: Timed out after 10 minutes")
+                logger.error(f"✗ {file_path.name}: Timed out after 60 minutes")
             except Exception as e:
                 logger.error(f"✗ {file_path.name}: {e}", exc_info=True)
 
@@ -483,9 +507,8 @@ class Pipeline:
         anonymizer: PhiAnonymizer,
     ) -> tuple[TimesheetRecord, PageMetrics]:
         """Process a single page image through OCR + validation."""
-        if getattr(self.config, "debug", None):
-            # Only generate debug images for this exact file
-            self.config.debug.visualize_ocr = (source_file == "N.Rivera Timesheets -030426-031026.pdf")
+        # Debug visualization is controlled by config.debug.visualize_ocr
+        # Use getattr to safely check, as some code paths may not have debug config
 
         page_metrics = PageMetrics(source_file=anon_filename, page_number=page_number)
 
@@ -561,9 +584,9 @@ class Pipeline:
 
                 valid_row_idx = 0
                 shifts_data = vlm_results.get("shifts", [])
-                if len(shifts_data) > 7:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                        f"Page {page_number} VLM exceeded max rows limit ({len(shifts_data)} rows)! Discarding fake table."
                     )
                     shifts_data = []
 
@@ -717,9 +740,9 @@ class Pipeline:
 
                 valid_row_idx = 0
                 shifts_data = vlm_results.get("shifts", [])
-                if len(shifts_data) > 7:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} VLM hallucinated {len(shifts_data)} rows! Discarding fake table."
+                        f"Page {page_number} VLM exceeded max rows limit ({len(shifts_data)} rows)! Discarding fake table."
                     )
                     shifts_data = []
 
@@ -791,7 +814,6 @@ class Pipeline:
                     )
 
         elif getattr(self.config, "extraction_mode", "ppocr_grid") == "band_crop_vlm_cloud":
-            # Band-crop approach: extract DATE row + footer block, send to Gemini
             band_start = time_module.time()
             payload_image, is_sig_page = self.band_crop_extractor.build_phi_safe_payload(
                 image
@@ -804,7 +826,6 @@ class Pipeline:
                     f"Skipping extraction."
                 )
             else:
-                # Send stitched payload to Gemini
                 vlm_start = time_module.time()
                 vlm_results = self.cloud_vlm.extract_table_crop(payload_image)
                 page_metrics.vlm_inference_time_s = time_module.time() - vlm_start
@@ -812,16 +833,81 @@ class Pipeline:
                 employee_name = vlm_results.get("rn_lpn_name", "")
                 employee_conf = 0.9 if employee_name else 0.0
 
-                valid_row_idx = 0
                 shifts_data = vlm_results.get("shifts", [])
 
-                if len(shifts_data) > 7:
+                if len(shifts_data) > 50:
                     logger.warning(
-                        f"Page {page_number} band_crop VLM hallucinated "
+                        f"Page {page_number} band_crop VLM exceeded max rows limit "
                         f"{len(shifts_data)} rows! Discarding."
                     )
                     shifts_data = []
 
+                def has_valid_time(row: dict) -> bool:
+                    time_in = row.get("time_in", "").strip()
+                    time_out = row.get("time_out", "").strip()
+                    hours = row.get("total_hours", "").strip()
+                    return bool(time_in or time_out or hours)
+
+                def has_valid_date(row: dict) -> bool:
+                    date_text = row.get("date", "").strip()
+                    return bool(re.sub(r"[^a-zA-Z0-9]", "", date_text))
+
+                has_time = any(has_valid_time(r) for r in shifts_data)
+                has_date = any(has_valid_date(r) for r in shifts_data)
+
+                enable_retry = (
+                    hasattr(self.config, "band_crop")
+                    and getattr(self.config.band_crop, "enable_date_retry", True)
+                )
+
+                retry_triggered = False
+                retry_date_recovered = False
+
+                if enable_retry and has_time and not has_date:
+                    logger.info(
+                        f"Page {page_number}: Date missing but time fields present - "
+                        f"triggering top-band retry"
+                    )
+                    retry_triggered = True
+
+                    retry_crop, retry_is_sig = self.band_crop_extractor.build_date_band_retry(
+                        image
+                    )
+
+                    if retry_crop is not None and not retry_is_sig:
+                        logger.info(f"Page {page_number}: Retrying date extraction with expanded crop")
+                        retry_vlm_start = time_module.time()
+                        retry_vlm_results = self.cloud_vlm.extract_table_crop(retry_crop)
+                        page_metrics.vlm_inference_time_s += time_module.time() - retry_vlm_start
+
+                        retry_dates = retry_vlm_results.get("shifts", [])
+                        if retry_dates:
+                            logger.info(
+                                f"Page {page_number}: Retry recovered {len(retry_dates)} date(s)"
+                            )
+                            retry_date_recovered = True
+
+                            time_by_index = {}
+                            for r in shifts_data:
+                                idx = r.get("row_index", 0)
+                                time_by_index[idx] = r
+
+                            for i, retry_row in enumerate(retry_dates):
+                                retry_date = retry_row.get("date", "").strip()
+                                if retry_date:
+                                    if i < len(shifts_data):
+                                        shifts_data[i]["date"] = retry_date
+                                    else:
+                                        shifts_data.append({
+                                            "date": retry_date,
+                                            "time_in": "",
+                                            "time_out": "",
+                                            "total_hours": "",
+                                        })
+                    else:
+                        logger.warning(f"Page {page_number}: Retry crop failed or signature page")
+
+                valid_row_idx = 0
                 for row_data in shifts_data:
                     date_text = row_data.get("date", "").strip()
                     time_in_text = row_data.get("time_in", "").strip()
@@ -865,17 +951,47 @@ class Pipeline:
                     )
                     valid_row_idx += 1
 
-                # Debug visualization
-                if (
+                if retry_triggered:
+                    final_has_date = any(has_valid_date(r) for r in shifts_data)
+                    if final_has_date and retry_date_recovered:
+                        logger.info(
+                            f"Page {page_number}: SUCCESS - Date retry recovered previously missing dates"
+                        )
+                    elif final_has_date:
+                        logger.info(
+                            f"Page {page_number}: Dates present after retry"
+                        )
+                    else:
+                        logger.warning(
+                            f"Page {page_number}: Date retry did not improve extraction"
+                        )
+
+                debug_enabled = (
                     getattr(self.config, "debug", None)
                     and self.config.debug.visualize_ocr
-                ):
-                    debug_path = (
-                        self.config.debug_output_path
-                        / f"band_crop_payload_page_{page_number}.jpg"
-                    )
-                    debug_path.parent.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(debug_path), payload_image)
+                )
+                logger.info(f"DEBUG CHECK: debug_enabled={debug_enabled}, visualize_ocr={getattr(self.config.debug, 'visualize_ocr', None) if self.config.debug else None}")
+                if debug_enabled:
+                    debug_dir = self.config.debug_output_path / "band_crop_vlm_cloud"
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"DEBUG: Saving band crop debug images to {debug_dir}")
+
+                    import cv2 as cv2  # noqa: PLC0415
+
+                    initial_debug = debug_dir / f"{anon_filename}_topband_initial.jpg"
+                    if payload_image is not None:
+                        cv2.imwrite(str(initial_debug), payload_image)
+                        logger.info(f"DEBUG: Saved initial crop to {initial_debug}")
+
+                    if retry_triggered:
+                        retry_debug = debug_dir / f"{anon_filename}_topband_retry.jpg"
+                        if retry_crop is not None:
+                            cv2.imwrite(str(retry_debug), retry_crop)
+                            logger.info(f"DEBUG: Saved retry crop to {retry_debug}")
+
+                    payload_debug = debug_dir / f"{anon_filename}_payload_page_{page_number}.jpg"
+                    if payload_image is not None:
+                        cv2.imwrite(str(payload_debug), payload_image)
 
         elif self.config.extraction_mode == "ocr_only":
             ocr_start = time_module.time()
