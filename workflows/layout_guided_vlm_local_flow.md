@@ -61,5 +61,6 @@ graph TD
 - **`ollama.model`** — Local VLM model name (default: `qwen2.5vl:7b`)
 - **`ollama.host`** — Ollama server URL (default: `http://localhost:11434`)
 - **`ollama.timeout_seconds`** — Max wait time per VLM call
+- **`ollama.max_retries`** — Maximum retry attempts on Ollama timeout or error (default: 2)
 - **`layout.table_zone`** — Fallback if PP-DocLayoutV3 fails to detect table
 - **Debug visualization** — Generates `vlm_` prefixed images with extracted text annotations

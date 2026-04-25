@@ -63,7 +63,7 @@ graph TD
 
 | Aspect | Behavior |
 |--------|----------|
-| OCR role | Full-page OCR, then filter boxes by Y position (top 25% ROI) for DATE detection |
+| OCR role | Full-page OCR for two purposes: (1) page classification — box count vs. `signature_ocr_threshold` when PP-DocLayoutV3 finds no table; (2) DATE band localization — filter boxes to top 25% Y for fuzzy DATE keyword matching |
 | Layout detection | PP-DocLayoutV3 — table presence + OCR box count for page classification |
 | Band extraction | Fuzzy keyword match on DATE label → expand UP (1.5×) and DOWN (2.0×); footer block from bottom fractions |
 | Signature detection | OCR box count threshold (default: 30 boxes) when PP-DocLayoutV3 finds no table |
@@ -99,6 +99,8 @@ graph TD
    - Expand DOWN by 2.0× the matched label height
    - This captures handwritten dates without exposing clinical PHI
 5. **If no match**: Use hardcoded Y fractions from config (`date_band_top_margin_frac: 0.02`, `date_band_bottom_margin_frac: 0.32`)
+
+> **Note:** `date_roi_frac` is currently hardcoded to `0.25` and is not exposed in `config.yaml`.
 
 ### Footer Block Detection
 
@@ -145,6 +147,8 @@ All these can be tuned in `config.yaml` under the `band_crop` section:
 | `enable_date_retry` | true | Enable retry with expanded date band |
 | `stitch_gap` | 20 | White pixels between stitched bands |
 | `signature_ocr_threshold` | 30 | OCR box count to distinguish signature from grid page |
+| `footer_bottom_margin_frac` | 0.02 | Distance from image bottom where footer band ends (as fraction of image height) |
+| `footer_height_frac` | 0.12 | Height of footer band as fraction of image height |
 
 ### Debug Visualization
 

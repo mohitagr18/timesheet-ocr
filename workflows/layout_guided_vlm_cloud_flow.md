@@ -61,7 +61,11 @@ graph TD
 
 - **`cloud_vlm.provider`** — Cloud provider (default: `google`)
 - **`cloud_vlm.model`** — Cloud model name (default: `gemini-2.5-flash`)
+- **`cloud_vlm.media_resolution`** — Gemini image resolution hint: "low" | "medium" | "high" | "ultra_high" (default: "high")
+- **`cloud_vlm.image_quality`** — JPEG compression quality of image sent to Gemini (default: 92; range 85–95 recommended)
 - **`cloud_vlm.api_key_env`** — Environment variable name for API key
 - **`cloud_vlm.timeout_seconds`** — Max wait time per API call
+- **`cloud_vlm.inter_file_delay`** — Seconds to wait between files (default: 5); prevents rate-limit errors on free-tier Gemini API
+- **`cloud_vlm.inter_page_delay`** — Seconds to wait between pages within the same file (default: 4); prevents rate-limit errors on free-tier Gemini API
 - **`GOOGLE_API_KEY`** — Must be set in `.env` or environment
 - **Debug visualization** — Generates `vlm_` prefixed images with extracted text annotations

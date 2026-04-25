@@ -6,29 +6,37 @@ description: Contextual Vision-LLM Full Page Extraction
 
 This workflow dictates the exact execution logic when `extraction_mode` inside `config.yaml` is set to `vlm_full_page`.
 
-Because it relies exclusively on Ollama hosting Qwen2.5-VL natively across the entire 1024px downsampled input image, the system **completely bypasses** PaddleOCR and rigid strict-line coordination grids! It allows the Vision Model to deeply understand the spatial intent and structural flow of the document (from signatures to edge-of-paper notes) and output perfectly structured JSON arrays mapping shifts directly to data fields.
+Because it relies exclusively on Ollama hosting Qwen2.5-VL natively across the entire 2048px downsampled input image, the system **completely bypasses** PaddleOCR and rigid strict-line coordination grids! It allows the Vision Model to deeply understand the spatial intent and structural flow of the document (from signatures to edge-of-paper notes) and output perfectly structured JSON arrays mapping shifts directly to data fields.
 
 ## ⚙️ Architecture
 
 ```mermaid
 graph TD
-    A[Start: Read Timesheet PDF Page] --> B[Downsample to Max 2048px]
-    B --> C[Convert Image to High-Q JPG Base64 String]
+    A[Start: Read Timesheet PDF Page] --> B[Quick PaddleOCR Pass — Page Classification]
+    B --> C{Signature Page? OCR box count < signature_ocr_threshold}
+
+    C -->|Yes — Signature Page| D[Extract Employee Name from Footer Only]
+    D --> E[Skip VLM — Return Empty Rows]
+
+    C -->|No — Grid Page| F[Downsample to Max 2048px]
+    F --> G[Convert Image to High-Q JPG Base64 String]
     
-    C --> D[Compile System Prompt Framework]
-    D --> E[Inject Strict Validation JSON Directives]
-    E --> F[API Request to qwen2.5vl:7b Engine]
+    G --> H[Compile System Prompt Framework]
+    H --> I[Inject Strict Validation JSON Directives]
+    I --> J[API Request to qwen2.5vl:7b Engine]
     
-    F -->|Raw Markdown Content| G[Regex JSON Block Extractor]
-    G --> H[Convert Block to Python Dictionaries]
+    J -->|Raw Markdown Content| K[Regex JSON Block Extractor]
+    K --> L[Convert Block to Python Dictionaries]
     
-    H --> I{Does Shift Have Valid 'Time In' OR 'Time Out'?}
-    I -->|Yes| J[Build TimesheetRow Object]
-    I -->|No / Blank / Hallucinated| K[Drop Empty Extracted Shift]
+    L --> M{Does Shift Have Valid 'Time In' OR 'Time Out'?}
+    M -->|Yes| N[Build TimesheetRow Object]
+    M -->|No / Blank / Hallucinated| O[Drop Empty Extracted Shift]
     
-    J & K --> L[Aggregate Row Indexes & Pass to Validation Sandbox]
-    L --> M[Math Checks vs Extracted Total Hours]
-    M --> N[Export Validated Row Statuses to Merged Excel File]
+    N & O --> P[Aggregate Row Indexes & Pass to Validation Sandbox]
+    P --> Q[Math Checks vs Extracted Total Hours]
+    Q --> R[Export Validated Row Statuses to Merged Excel File]
+    
+    style E fill:#fff8e1,stroke:#f9a825,color:#000
 ```
 
 ## 🛠️ Configuration & Mechanics

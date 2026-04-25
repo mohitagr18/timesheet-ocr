@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - Signature page detection and skip logic
 - Debug visualization with approach-specific prefixes
 - `CHANGELOG.md`, `.env.example`, `samples/` directory structure
+- `band_crop.enable_date_retry` config flag (default: `true`) and `band_crop.date_retry_expansion_frac` (default: `0.05`) to support automatic retry with an expanded date band when initial extraction finds no dates on a page.
 
 ### Changed
 - Row-level comparison table redesigned: dates as rows, Hours+Status per approach as columns

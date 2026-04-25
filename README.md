@@ -18,10 +18,10 @@ graph TD
     B --> C[Preprocess & Deskew]
     C --> D{extraction_mode}
 
-    D -->|ocr_only| E1[PaddleOCR Grid Extraction]
+    D -->|ocr_only| E1[PaddleOCR Grid — No Confidence Routing, No VLM]
     E1 --> F1[Parse & Validate — No VLM]
 
-    D -->|ppocr_grid| E2[PaddleOCR Grid Extraction]
+    D -->|ppocr_grid| E2[PaddleOCR Grid + Confidence-Gated VLM Fallback]
     E2 --> F2{Cell Confidence Check}
     F2 -->|Low| G2[VLM Fallback via Ollama]
     F2 -->|OK| H2[Parse & Validate]
@@ -207,12 +207,16 @@ extraction_mode: "ppocr_grid"   # ocr_only | ppocr_grid | vlm_full_page | layout
 
 confidence:
   accept_threshold: 0.90        # Accept OCR results above this confidence
-  fallback_threshold: 0.75      # Below this, flag for review
+  fallback_threshold: 0.75      # Between this and accept_threshold → VLM fallback; below this → flag for review
 
 layout:
   transposed: true              # Timesheet has dates as columns
   header_zone: [0.0, 0.0, 1.0, 0.16]
   table_zone: [0.24, 0.16, 1.0, 0.98]
+
+debug:
+  visualize_ocr: false
+  signature_ocr_threshold: 100  # OCR box count below which a page is treated as a signature/summary page
 
 ollama:
   model: "qwen2.5vl:7b"         # Local VLM model
@@ -221,7 +225,13 @@ ollama:
 cloud_vlm:
   provider: "google"
   model: "gemini-2.5-flash"
+  media_resolution: "high"      # "low" | "medium" | "high" | "ultra_high"
+  image_quality: 92             # JPEG quality sent to VLM (85–95 recommended)
+  inter_file_delay: 5           # Seconds between files (free-tier rate limiting)
+  inter_page_delay: 4           # Seconds between pages within a file
 ```
+
+> **Note:** The code-level defaults in `src/config.py` are `accept_threshold: 0.85` and `fallback_threshold: 0.60`. The values above (0.90/0.75) reflect the `config.yaml` overrides for this project's timesheet template.
 
 ---
 
@@ -241,7 +251,9 @@ output/
 ├── combined/                    # Combined benchmark across all approaches
 │   ├── benchmark_combined.xlsx  # Summary + Approach Comparison + Human-Verified Results + IEEE Paper Results
 │   └── debug/                   # Debug images from all approaches
-└── debug/                       # Shared debug images
+├── debug/                       # Shared debug images
+└── reports/
+    └── report_YYYYMMDD_HHMMSS.txt  # Per-file success/failure audit trail
 
 ground_truth.xlsx                # Manually-filled reference data (git-ignored, at project root)
 ```
